@@ -1,0 +1,28 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# Managed components (downloaded by IDF component manager)
+managed_components/
+
+# Archives
+*.zip
+
+# Agent / editor tooling
+.omp/
+.codegraph/
+.idea/
+.vscode/
+.cache/
+.clangd
+compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store

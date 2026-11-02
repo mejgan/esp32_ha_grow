@@ -1,0 +1,120 @@
+menu "Grow Box"
+
+    menu "Floor 1 pins (DHT11, capacitive soil, LED strip 1)"
+        config GROWBOX_F1_DHT11_GPIO
+            int "DHT11 DATA GPIO"
+            default 18
+
+        config GROWBOX_F1_SOIL_CAP_GPIO
+            int "Capacitive soil sensor AOUT GPIO (ADC1: 0-6)"
+            range 0 6
+            default 0
+
+        config GROWBOX_F1_LIGHT_PWM_GPIO
+            int "LED strip 1 PWM GPIO (IRF520 SIG)"
+            default 19
+    endmenu
+
+    menu "Floor 2 pins (AHT10 #1, YL-69 soil, LED strip 2)"
+        comment "AHT10 #1 uses the LP I2C bus, fixed to SDA=GPIO6, SCL=GPIO7"
+
+        config GROWBOX_F2_SOIL_RES_GPIO
+            int "YL-69/FC-28 module AO GPIO (ADC1: 0-6)"
+            range 0 6
+            default 1
+
+        config GROWBOX_F2_SOIL_RES_PWR_GPIO
+            int "YL-69/FC-28 module VCC GPIO"
+            default 10
+            help
+                Powered only during a read to slow down probe corrosion.
+
+        config GROWBOX_F2_LIGHT_PWM_GPIO
+            int "LED strip 2 PWM GPIO (IRF520 SIG)"
+            default 20
+    endmenu
+
+    menu "Floor 3 pins (AHT10 #2, BMP180, TEMT6000, LED strip 3)"
+        config GROWBOX_F3_I2C_SDA_GPIO
+            int "I2C SDA GPIO (AHT10 #2, BMP180)"
+            default 22
+
+        config GROWBOX_F3_I2C_SCL_GPIO
+            int "I2C SCL GPIO (AHT10 #2, BMP180)"
+            default 23
+
+        config GROWBOX_F3_LIGHT_SENSOR_GPIO
+            int "TEMT6000 SIG GPIO (ADC1: 0-6)"
+            range 0 6
+            default 2
+
+        config GROWBOX_F3_LIGHT_PWM_GPIO
+            int "LED strip 3 PWM GPIO (IRF520 SIG)"
+            default 21
+    endmenu
+
+    config GROWBOX_SENSOR_PERIOD_S
+        int "Sensor read period (s)"
+        range 5 3600
+        default 30
+
+    config GROWBOX_PWM_FREQ_HZ
+        int "LED PWM frequency (Hz)"
+        range 100 20000
+        default 1000
+
+    menu "Soil sensor calibration"
+        config GROWBOX_SOIL_CAP_DRY_MV
+            int "Capacitive sensor reading in dry air (mV)"
+            default 2700
+            help
+                Read the logged mV in dry air / in water and set these.
+
+        config GROWBOX_SOIL_CAP_WET_MV
+            int "Capacitive sensor reading in water (mV)"
+            default 1300
+            help
+                Read the logged mV in dry air / in water and set these.
+
+        config GROWBOX_SOIL_RES_DRY_MV
+            int "YL-69 reading in dry air (mV)"
+            default 3200
+            help
+                Read the logged mV in dry air / in water and set these.
+
+        config GROWBOX_SOIL_RES_WET_MV
+            int "YL-69 reading in water (mV)"
+            default 1000
+            help
+                Read the logged mV in dry air / in water and set these.
+    endmenu
+
+    menu "Default settings (first boot, every floor)"
+        config GROWBOX_DEFAULT_ON_HOUR
+            int "Light on hour"
+            range 0 23
+            default 6
+
+        config GROWBOX_DEFAULT_OFF_HOUR
+            int "Light off hour"
+            range 0 23
+            default 0
+
+        config GROWBOX_DEFAULT_BRIGHTNESS
+            int "Auto mode brightness (%)"
+            range 1 100
+            default 100
+
+        config GROWBOX_DEFAULT_MAX_TEMP
+            int "Over-temperature cutoff (C)"
+            range 20 50
+            default 35
+    endmenu
+
+    config GROWBOX_ZB_CHANNEL_MASK
+        hex "Zigbee channel mask"
+        default 0x07FFF800
+        help
+            Bit N set = channel N allowed. Default: all channels 11-26.
+
+endmenu
