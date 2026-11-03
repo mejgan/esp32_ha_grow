@@ -1,5 +1,6 @@
 #include "bmp180.h"
 
+#include "delay.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -11,6 +12,12 @@ static const char *TAG = "bmp180";
 #define BMP180_CHIP_ID    0x55
 #define BMP180_OSS        3
 #define BMP180_TIMEOUT_MS 100
+
+#define BMP180_REG_CTRL      0xF4
+#define BMP180_REG_OUT       0xF6
+#define BMP180_CTRL_SCO      0x20 /* start of conversion; reads 1 until the conversion has finished */
+#define BMP180_TEMP_MAX_MS   5    /* datasheet 4.5 ms */
+#define BMP180_PRESS_MAX_MS  26   /* datasheet 25.5 ms at OSS = 3 */
 
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
@@ -81,6 +88,24 @@ esp_err_t bmp180_init(i2c_master_bus_handle_t bus)
     return ESP_OK;
 }
 
+/* Waits the datasheet maximum, then polls Sco until the conversion result is in the output registers. */
+static esp_err_t wait_conversion(uint32_t max_ms)
+{
+    delay_at_least_ms(max_ms);
+    for (int i = 0; i < 10; i++) {
+        uint8_t ctrl;
+        esp_err_t err = read_regs(BMP180_REG_CTRL, &ctrl, 1);
+        if (err != ESP_OK) {
+            return err;
+        }
+        if (!(ctrl & BMP180_CTRL_SCO)) {
+            return ESP_OK;
+        }
+        delay_at_least_ms(2);
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 esp_err_t bmp180_read(float *temp_c, float *pressure_hpa)
 {
     if (!s_ready) {
@@ -90,18 +115,23 @@ esp_err_t bmp180_read(float *temp_c, float *pressure_hpa)
         }
     }
     uint8_t buf[3];
-    esp_err_t err = write_reg(0xF4, 0x2E);
+    int32_t ut = 0;
+    esp_err_t err = write_reg(BMP180_REG_CTRL, 0x2E);
     if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        err = read_regs(0xF6, buf, 2);
-    }
-    int32_t ut = (buf[0] << 8) | buf[1];
-    if (err == ESP_OK) {
-        err = write_reg(0xF4, 0x34 + (BMP180_OSS << 6));
+        err = wait_conversion(BMP180_TEMP_MAX_MS);
     }
     if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(26));
-        err = read_regs(0xF6, buf, 3);
+        err = read_regs(BMP180_REG_OUT, buf, 2);
+    }
+    if (err == ESP_OK) {
+        ut = (buf[0] << 8) | buf[1];
+        err = write_reg(BMP180_REG_CTRL, 0x34 + (BMP180_OSS << 6));
+    }
+    if (err == ESP_OK) {
+        err = wait_conversion(BMP180_PRESS_MAX_MS);
+    }
+    if (err == ESP_OK) {
+        err = read_regs(BMP180_REG_OUT, buf, 3);
     }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "read failed: %s", esp_err_to_name(err));

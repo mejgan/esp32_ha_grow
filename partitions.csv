@@ -1,5 +1,9 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,        data, nvs,      ,        0x10000,
-phy_init,   data, phy,      ,        0x1000,
-factory,    app,  factory,  ,        1536K,
-zb_fct,     data, fat,      ,        1K,
+# Name,   Type, SubType, Offset,   Size,     Flags
+# nvs keeps its offset and size from the single-app layout, so settings and the Zigbee network survive the
+# switch to this table (it has to be flashed over USB once: idf.py flash).
+nvs,      data, nvs,     0x9000,   0x10000,
+otadata,  data, ota,     0x19000,  0x2000,
+phy_init, data, phy,     0x1B000,  0x1000,
+ota_0,    app,  ota_0,   0x20000,  0x1C0000,
+ota_1,    app,  ota_1,   0x1E0000, 0x1C0000,
+zb_fct,   data, fat,     0x3A0000, 1K,

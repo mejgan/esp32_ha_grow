@@ -17,6 +17,23 @@ const ON_OFF = {valueOn: ["ON", 1], valueOff: ["OFF", 0]};
 const SETTING_REPORTING = {min: 0, max: "1_HOUR", change: 1};
 const FLAG_REPORTING = {min: 0, max: "1_HOUR", change: 0};
 
+// Until a sensor has a reading (and on disabled floors) the firmware holds the ZCL "invalid" value
+// (0x8000 for signed, 0xFFFF for unsigned attributes). Drop those instead of publishing -327.68 °C or 655.35 %.
+const INVALID_S16 = -32768;
+const INVALID_U16 = 0xffff;
+function skipInvalid(extend, attribute, invalid) {
+    for (const fz of extend.fromZigbee) {
+        const convert = fz.convert;
+        fz.convert = (model, msg, publish, options, meta) => {
+            if (msg.data?.[attribute] === invalid) {
+                return;
+            }
+            return convert(model, msg, publish, options, meta);
+        };
+    }
+    return extend;
+}
+
 export default {
     zigbeeModel: ["GrowBox-C6"],
     model: "GrowBox-C6",
@@ -37,16 +54,23 @@ export default {
                 soilMoisture: {name: "soilMoisture", ID: 0x0006, type: Zcl.DataType.UINT16},
                 floorEnabled: {name: "floorEnabled", ID: 0x0007, type: Zcl.DataType.BOOLEAN, write: true},
                 timeSynced: {name: "timeSynced", ID: 0x0008, type: Zcl.DataType.BOOLEAN},
+                lightOnMinute: {name: "lightOnMinute", ID: 0x0009, type: Zcl.DataType.UINT8, write: true, max: 59},
+                lightOffMinute: {name: "lightOffMinute", ID: 0x000a, type: Zcl.DataType.UINT8, write: true, max: 59},
+                sensorFault: {name: "sensorFault", ID: 0x000b, type: Zcl.DataType.BOOLEAN},
             },
             commands: {},
             commandsResponse: {},
         }),
         m.light({endpointNames: FLOORS, configureReporting: true, effect: false, powerOnBehavior: false}),
-        m.temperature({endpointNames: FLOORS}),
-        m.humidity({endpointNames: FLOORS}),
-        // Library default reports only on a 5 kPa change; firmware value unit is hPa, so report every 2 hPa.
-        m.pressure({endpointNames: ["floor3"], reporting: {min: "10_SECONDS", max: "1_HOUR", change: 2}}),
-        m.illuminance({endpointNames: ["floor3"]}),
+        skipInvalid(m.temperature({endpointNames: FLOORS}), "measuredValue", INVALID_S16),
+        skipInvalid(m.humidity({endpointNames: FLOORS}), "measuredValue", INVALID_U16),
+        // Firmware value unit is hPa, so report every 2 hPa.
+        skipInvalid(
+            m.pressure({endpointNames: ["floor3"], reporting: {min: "10_SECONDS", max: "1_HOUR", change: 2}}),
+            "measuredValue",
+            INVALID_S16,
+        ),
+        skipInvalid(m.illuminance({endpointNames: ["floor3"]}), "measuredValue", INVALID_U16),
         m.binary({
             name: "enabled",
             cluster: CL,
@@ -81,6 +105,19 @@ export default {
             description: "Hour the light turns on (auto mode)",
         }),
         m.numeric({
+            name: "light_on_minute",
+            cluster: CL,
+            attribute: "lightOnMinute",
+            endpointNames: FLOORS,
+            valueMin: 0,
+            valueMax: 59,
+            valueStep: 1,
+            unit: "min",
+            access: "ALL",
+            reporting: SETTING_REPORTING,
+            description: "Minute the light turns on (auto mode)",
+        }),
+        m.numeric({
             name: "light_off_hour",
             cluster: CL,
             attribute: "lightOffHour",
@@ -92,6 +129,19 @@ export default {
             access: "ALL",
             reporting: SETTING_REPORTING,
             description: "Hour the light turns off (auto mode)",
+        }),
+        m.numeric({
+            name: "light_off_minute",
+            cluster: CL,
+            attribute: "lightOffMinute",
+            endpointNames: FLOORS,
+            valueMin: 0,
+            valueMax: 59,
+            valueStep: 1,
+            unit: "min",
+            access: "ALL",
+            reporting: SETTING_REPORTING,
+            description: "Minute the light turns off (auto mode)",
         }),
         m.numeric({
             name: "auto_brightness",
@@ -127,20 +177,34 @@ export default {
             endpointName: FLOORS,
             access: "STATE_GET",
             reporting: FLAG_REPORTING,
-            description: "Over-temperature cutoff active",
+            description: "Over-temperature cutoff active (also when no temperature sensor works for a while)",
         }),
-        m.numeric({
-            name: "soil_moisture",
+        m.binary({
+            name: "sensor_fault",
             cluster: CL,
-            attribute: "soilMoisture",
-            endpointNames: SOIL_FLOORS,
-            unit: "%",
-            scale: 100,
-            precision: 1,
+            attribute: "sensorFault",
+            ...ON_OFF,
+            endpointName: FLOORS,
             access: "STATE_GET",
-            reporting: {min: 10, max: "1_HOUR", change: 100},
-            description: "Soil moisture (floor 1 capacitive, floor 2 YL-69)",
+            reporting: FLAG_REPORTING,
+            description: "A sensor of this floor gave no reading at the last measurement",
         }),
+        skipInvalid(
+            m.numeric({
+                name: "soil_moisture",
+                cluster: CL,
+                attribute: "soilMoisture",
+                endpointNames: SOIL_FLOORS,
+                unit: "%",
+                scale: 100,
+                precision: 1,
+                access: "STATE_GET",
+                reporting: {min: 10, max: "1_HOUR", change: 100},
+                description: "Soil moisture (floor 1 capacitive, floor 2 YL-69)",
+            }),
+            "soilMoisture",
+            INVALID_U16,
+        ),
         m.binary({
             name: "time_synced",
             cluster: CL,
@@ -149,7 +213,9 @@ export default {
             access: "STATE_GET",
             entityCategory: "diagnostic",
             reporting: FLAG_REPORTING,
-            description: "Clock synced from coordinator",
+            description: "Clock set from the coordinator (kept across restarts, lost on power loss)",
         }),
     ],
+    // Firmware updates: the build writes build/growbox.ota and build/growbox_ota_index.json (see README).
+    ota: true,
 };

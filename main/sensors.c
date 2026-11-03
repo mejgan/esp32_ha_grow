@@ -3,6 +3,7 @@
 #include "aht10.h"
 #include "analog.h"
 #include "bmp180.h"
+#include "delay.h"
 #include "dht11.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -32,6 +33,19 @@ static const uint8_t s_caps[GB_FLOOR_COUNT] = {
 uint8_t sensors_floor_caps(uint8_t floor)
 {
     return floor < GB_FLOOR_COUNT ? s_caps[floor] : 0;
+}
+
+bool sensors_floor_fault(uint8_t floor, const floor_readings_t *r)
+{
+    uint8_t caps = sensors_floor_caps(floor);
+    return !r->temp_valid || ((caps & SENSOR_CAP_HUMIDITY) && !r->rh_valid) ||
+           ((caps & SENSOR_CAP_SOIL) && !r->soil_valid) || ((caps & SENSOR_CAP_PRESSURE) && !r->pressure_valid) ||
+           ((caps & SENSOR_CAP_LUX) && !r->lux_valid);
+}
+
+i2c_master_bus_handle_t sensors_i2c_bus(sensors_bus_t bus)
+{
+    return bus == SENSORS_BUS_LP ? s_bus_f2 : s_bus_f3;
 }
 
 static esp_err_t new_bus(i2c_port_num_t port, int sda, int scl, bool lp, i2c_master_bus_handle_t *out)
@@ -109,7 +123,7 @@ static void read_floor1(floor_readings_t *out)
 {
     out->temp_valid = dht11_read(CONFIG_GROWBOX_F1_DHT11_GPIO, &out->temp_c, &out->rh) == ESP_OK;
     if (!out->temp_valid) {
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        delay_at_least_ms(2000); /* DHT11 needs >= 1 s between reads */
         out->temp_valid = dht11_read(CONFIG_GROWBOX_F1_DHT11_GPIO, &out->temp_c, &out->rh) == ESP_OK;
     }
     out->rh_valid = out->temp_valid;
@@ -121,7 +135,7 @@ static void read_floor2(floor_readings_t *out)
     out->temp_valid = aht10_read(&s_aht_f2, &out->temp_c, &out->rh) == ESP_OK;
     out->rh_valid = out->temp_valid;
     gpio_set_level(CONFIG_GROWBOX_F2_SOIL_RES_PWR_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    delay_at_least_ms(100);
     read_soil(ANALOG_SOIL_RES, CONFIG_GROWBOX_SOIL_RES_DRY_MV, CONFIG_GROWBOX_SOIL_RES_WET_MV, out);
     gpio_set_level(CONFIG_GROWBOX_F2_SOIL_RES_PWR_GPIO, 0);
 }

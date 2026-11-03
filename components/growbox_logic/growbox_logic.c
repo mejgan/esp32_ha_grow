@@ -1,16 +1,41 @@
 #include "growbox_logic.h"
 
 #include <math.h>
+#include <string.h>
 
-bool gb_in_light_window(uint8_t hour, uint8_t on_hour, uint8_t off_hour)
+static uint8_t clamp_u8(uint8_t v, uint8_t lo, uint8_t hi)
 {
-    if (on_hour == off_hour) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void gb_settings_clamp(gb_settings_t *s)
+{
+    /* Read the bools as bytes: a corrupted blob may hold values other than 0/1. */
+    uint8_t raw;
+    memcpy(&raw, &s->enabled, 1);
+    s->enabled = raw != 0;
+    memcpy(&raw, &s->auto_mode, 1);
+    s->auto_mode = raw != 0;
+    memcpy(&raw, &s->manual_on, 1);
+    s->manual_on = raw != 0;
+    s->manual_level = clamp_u8(s->manual_level, 1, 254);
+    s->on_hour = clamp_u8(s->on_hour, 0, 23);
+    s->on_minute = clamp_u8(s->on_minute, 0, 59);
+    s->off_hour = clamp_u8(s->off_hour, 0, 23);
+    s->off_minute = clamp_u8(s->off_minute, 0, 59);
+    s->auto_brightness_pct = clamp_u8(s->auto_brightness_pct, 1, 100);
+    s->max_temp_c = clamp_u8(s->max_temp_c, 20, 50);
+}
+
+bool gb_in_light_window(uint16_t now, uint16_t on, uint16_t off)
+{
+    if (on == off) {
         return false;
     }
-    if (on_hour < off_hour) {
-        return hour >= on_hour && hour < off_hour;
+    if (on < off) {
+        return now >= on && now < off;
     }
-    return hour >= on_hour || hour < off_hour;
+    return now >= on || now < off;
 }
 
 bool gb_heat_lock_update(bool locked, bool temp_valid, float temp_c, float max_temp_c)
@@ -54,11 +79,25 @@ uint8_t gb_pct_to_level(uint8_t pct)
     return (uint8_t)(level < 1 ? 1 : level);
 }
 
-gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint8_t hour, bool heat_lock)
+uint8_t gb_level_to_pct(uint8_t level)
+{
+    if (level == 0) {
+        return 0;
+    }
+    long pct = lround(level * 100 / 254.0);
+    if (pct < 1) {
+        pct = 1;
+    } else if (pct > 100) {
+        pct = 100;
+    }
+    return (uint8_t)pct;
+}
+
+gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint16_t minute_of_day, bool heat_lock)
 {
     gb_light_output_t out;
     if (s->auto_mode) {
-        out.on = time_valid && gb_in_light_window(hour, s->on_hour, s->off_hour);
+        out.on = time_valid && gb_in_light_window(minute_of_day, gb_on_minute_of_day(s), gb_off_minute_of_day(s));
         out.level = gb_pct_to_level(s->auto_brightness_pct);
     } else {
         out.on = s->manual_on;
@@ -68,6 +107,14 @@ gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint8
         out.on = false;
     }
     return out;
+}
+
+uint16_t gb_minute_of_day(int64_t secs)
+{
+    if (secs < 0) {
+        secs = 0;
+    }
+    return (uint16_t)((secs % 86400) / 60);
 }
 
 uint16_t gb_soil_pct_x100(int mv, int dry_mv, int wet_mv)
@@ -155,7 +202,167 @@ bool gb_dht11_decode(const uint8_t d[5], float *temp_c, float *rh)
     return true;
 }
 
-uint8_t gb_hour_from_zcl_local(uint32_t zcl_local_secs)
+/* Bit cell limits (us). A '0' high lasts ~26 us, a '1' ~70 us; the low before each bit ~50 us. */
+#define DHT_LOW_MIN_US   20
+#define DHT_LOW_MAX_US   120
+#define DHT_HIGH_MIN_US  5
+#define DHT_HIGH_MAX_US  120
+#define DHT_ONE_THRESHOLD_US 48
+
+bool gb_dht11_frame_from_pulses(const gb_pulse_t *p, size_t n, uint8_t frame[5])
 {
-    return (uint8_t)((zcl_local_secs / 3600u) % 24u);
+    /* Ring of the last 40 high durations that followed a plausible low. */
+    uint16_t highs[40];
+    size_t count = 0;
+    for (size_t i = 1; i < n; i++) {
+        const gb_pulse_t *lo = &p[i - 1];
+        const gb_pulse_t *hi = &p[i];
+        if (lo->level != 0 || hi->level != 1) {
+            continue;
+        }
+        if (lo->us < DHT_LOW_MIN_US || lo->us > DHT_LOW_MAX_US || hi->us < DHT_HIGH_MIN_US ||
+            hi->us > DHT_HIGH_MAX_US) {
+            continue;
+        }
+        highs[count % 40] = hi->us;
+        count++;
+    }
+    if (count < 40) {
+        return false;
+    }
+    memset(frame, 0, 5);
+    for (size_t b = 0; b < 40; b++) {
+        uint16_t us = highs[(count - 40 + b) % 40];
+        frame[b / 8] = (uint8_t)(frame[b / 8] << 1);
+        if (us > DHT_ONE_THRESHOLD_US) {
+            frame[b / 8] |= 1;
+        }
+    }
+    return true;
+}
+
+/* ---------- Zigbee OTA file parser ---------- */
+
+enum {
+    OTA_S_HEADER,      /* collecting the first 56 header bytes */
+    OTA_S_HEADER_SKIP, /* optional header fields */
+    OTA_S_SUB_HEADER,  /* 6-byte sub-element tag + length */
+    OTA_S_SUB_DATA,
+    OTA_S_DONE,
+};
+
+static uint16_t rd16(const uint8_t *b)
+{
+    return (uint16_t)(b[0] | (b[1] << 8));
+}
+
+static uint32_t rd32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+void gb_ota_parser_init(gb_ota_parser_t *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->state = OTA_S_HEADER;
+}
+
+bool gb_ota_parser_done(const gb_ota_parser_t *p)
+{
+    return p->state == OTA_S_DONE;
+}
+
+/* Called whenever an element (header or sub-element) ends; decides what comes next. */
+static void ota_next_element(gb_ota_parser_t *p)
+{
+    p->fill = 0;
+    p->state = p->pos >= p->total_size ? OTA_S_DONE : OTA_S_SUB_HEADER;
+}
+
+gb_ota_err_t gb_ota_parser_feed(gb_ota_parser_t *p, const uint8_t *data, size_t len, gb_ota_sink_t sink, void *ctx)
+{
+    while (len > 0) {
+        switch (p->state) {
+        case OTA_S_HEADER: {
+            size_t n = GB_OTA_HEADER_MIN - p->fill;
+            n = n < len ? n : len;
+            memcpy(p->buf + p->fill, data, n);
+            p->fill += n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->fill < GB_OTA_HEADER_MIN) {
+                break;
+            }
+            if (rd32(p->buf) != GB_OTA_FILE_ID) {
+                return GB_OTA_ERR_MAGIC;
+            }
+            p->header_len = rd16(p->buf + 6);
+            p->manuf_code = rd16(p->buf + 10);
+            p->image_type = rd16(p->buf + 12);
+            p->file_version = rd32(p->buf + 14);
+            p->total_size = rd32(p->buf + 52);
+            if (p->header_len < GB_OTA_HEADER_MIN || p->total_size < p->header_len) {
+                return GB_OTA_ERR_HEADER;
+            }
+            p->remaining = p->header_len - GB_OTA_HEADER_MIN;
+            if (p->remaining > 0) {
+                p->state = OTA_S_HEADER_SKIP;
+            } else {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_HEADER_SKIP: {
+            size_t n = p->remaining < len ? p->remaining : len;
+            p->remaining -= n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->remaining == 0) {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_SUB_HEADER: {
+            size_t n = 6u - p->fill;
+            n = n < len ? n : len;
+            memcpy(p->buf + p->fill, data, n);
+            p->fill += n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->fill < 6) {
+                break;
+            }
+            p->tag = rd16(p->buf);
+            p->remaining = rd32(p->buf + 2);
+            if (p->pos > p->total_size || p->remaining > p->total_size - p->pos) {
+                return GB_OTA_ERR_HEADER;
+            }
+            if (p->remaining > 0) {
+                p->state = OTA_S_SUB_DATA;
+            } else {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_SUB_DATA: {
+            size_t n = p->remaining < len ? p->remaining : len;
+            if (p->tag == GB_OTA_TAG_UPGRADE) {
+                if (sink != NULL && sink(ctx, data, n) != 0) {
+                    return GB_OTA_ERR_SINK;
+                }
+                p->image_bytes += n;
+            }
+            p->remaining -= n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->remaining == 0) {
+                ota_next_element(p);
+            }
+        } break;
+        default:
+            return GB_OTA_ERR_OVERFLOW;
+        }
+    }
+    return GB_OTA_OK;
 }
