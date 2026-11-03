@@ -40,7 +40,7 @@ export default {
     zigbeeModel: ["GrowBox-C6"],
     model: "GrowBox-C6",
     vendor: "GrowBoxDIY",
-    description: "ESP32-C6 3-floor grow box controller (router)",
+    description: "ESP32-C6 3-floor grow box controller",
     extend: [
         m.deviceEndpoints({endpoints: {floor1: 1, floor2: 2, floor3: 3, room: 4}}),
         m.deviceAddCustomCluster(CL, {
@@ -59,6 +59,7 @@ export default {
                 lightOnMinute: {name: "lightOnMinute", ID: 0x0009, type: Zcl.DataType.UINT8, write: true, max: 59},
                 lightOffMinute: {name: "lightOffMinute", ID: 0x000a, type: Zcl.DataType.UINT8, write: true, max: 59},
                 sensorFault: {name: "sensorFault", ID: 0x000b, type: Zcl.DataType.BOOLEAN},
+                takePhoto: {name: "takePhoto", ID: 0x000c, type: Zcl.DataType.BOOLEAN, write: true},
             },
             commands: {},
             commandsResponse: {},
@@ -207,6 +208,15 @@ export default {
             "soilMoisture",
             INVALID_U16,
         ),
+        m.binary({
+            name: "take_photo",
+            cluster: CL,
+            attribute: "takePhoto",
+            ...ON_OFF,
+            endpointName: FLOORS,
+            access: "STATE_SET",
+            description: "Only with cameras: set ON to take and upload a photo of this floor now (goes back to OFF)",
+        }),
         m.binary({
             name: "time_synced",
             cluster: CL,

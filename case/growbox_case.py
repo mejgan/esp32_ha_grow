@@ -81,10 +81,13 @@ USB_SLOT_Z = 17.0                    # "open": slot center above the floor (fema
 
 # Cable holes in the bottom wall: PG7 gland (12.5 mm) or GX12 aviation connector (12 mm).
 # Column per floor: lower = LED strip, upper = sensors.
-CABLE_HOLE_D = 12.5
-CABLE_X = (40.0, 64.0, 88.0)
+# Lower row: LED strip cable, PG7 gland (12.5 mm). Upper row: sensor (+ camera) cable, PG9 gland (15.5 mm) so a
+# 12-core cable fits.
+CABLE_HOLE_D = (12.5, 15.5)
+CABLE_X = (37.0, 64.0, 91.0)
 CABLE_Z = (11.0, 33.0)
-CABLE_NUT_R = 11.0              # PG7 nut across corners / 2, for the collision check
+CABLE_NUT_R = (11.0, 12.7)      # gland nut across corners / 2 (PG7, PG9), for the collision check
+CABLE_BODY_R = (9.5, 11.5)      # gland body outside the box, for the collision check
 CABLE_INSIDE = 10.0             # gland length inside the wall
 
 # DC jack (right wall). 11 mm for the common DC-022 5.5x2.1 panel jack, 8 mm for DC-099 metal jacks.
@@ -108,7 +111,7 @@ EARS = True
 EAR_X = (12.0, INNER_W - 12.0)      # ear centers (inside X)
 EAR_W, EAR_L, EAR_T = 18.0, 15.0, 4.0
 EAR_HOLE_D, EAR_HEAD_D = 4.6, 8.6
-EAR_RIB = (2.0, 6.0)                # side ribs: thickness, height/length (45 degrees)
+EAR_RIB = (2.0, 4.0)                # side ribs: thickness, height/length (45 degrees)
 
 # Wall-mount keyholes in the floor as an alternative (screw head up to 7.5 mm, shank up to 4 mm).
 KEYHOLE_X = (20.0, 100.0)
@@ -375,14 +378,14 @@ def make_base():
 
     # Bottom wall (Y = 0): cable holes + labels.
     for x in CABLE_X:
-        for z in CABLE_Z:
-            cuts.append(teardrop_y(x + OX, z + OZ, CABLE_HOLE_D, WALL + 2, -1))
+        for j, z in enumerate(CABLE_Z):
+            cuts.append(teardrop_y(x + OX, z + OZ, CABLE_HOLE_D[j], WALL + 2, -1))
     for i, x in enumerate(CABLE_X):
         label = f"F{i + 1}"
         t = text_pixels(label, LABEL_PIXEL, LABEL_DEPTH + 0.01)
         # local u -> X, v -> Z, w -> into the wall (+Y); outer face at Y = 0
         t = t.transform([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]])
-        z0 = CABLE_Z[1] + 8.7 + 1.6
+        z0 = CABLE_Z[1] + CABLE_BODY_R[1] + 1.0
         cuts.append(t.translate([x + OX - text_width(label, LABEL_PIXEL) / 2, -0.01, z0 + OZ]))
     lbl = "LED"
     t = text_pixels(lbl, LABEL_PIXEL * 0.8, LABEL_DEPTH + 0.01).transform([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]])
@@ -552,7 +555,7 @@ def inner_parts(d: Display):
                                 PB_STANDOFF_H + PB_T + PB_PARTS_H)
     for i, x in enumerate(CABLE_X):
         for j, z in enumerate(CABLE_Z):
-            c = Manifold.cylinder(CABLE_INSIDE, CABLE_NUT_R, CABLE_NUT_R, 6).rotate([-90, 0, 0])
+            c = Manifold.cylinder(CABLE_INSIDE, CABLE_NUT_R[j], CABLE_NUT_R[j], 6).rotate([-90, 0, 0])
             parts[f"gland F{i + 1}{'ab'[j]}"] = c.translate([x + OX, OY, z + OZ])
     L, D = DC_JACK_BODY
     parts["DC jack"] = Manifold.cylinder(L, D / 2, D / 2, 32).rotate([0, -90, 0]).translate(
@@ -578,7 +581,7 @@ def inner_parts(d: Display):
     # Outside the box: gland bodies and cables, the DC plug, and a screwdriver over every ear hole.
     for i, x in enumerate(CABLE_X):
         for j, z in enumerate(CABLE_Z):
-            c = Manifold.cylinder(25, 9.5, 9.5, 24).rotate([90, 0, 0])
+            c = Manifold.cylinder(25, CABLE_BODY_R[j], CABLE_BODY_R[j], 24).rotate([90, 0, 0])
             parts[f"gland F{i + 1}{'ab'[j]} outside"] = c.translate([x + OX, -0.05, z + OZ])
     parts["DC plug"] = Manifold.cylinder(40, 5.5, 5.5, 32).rotate([0, 90, 0]).translate(
         [OX + INNER_W + WALL + 0.05, DC_JACK_Y + OY, DC_JACK_Z + OZ])

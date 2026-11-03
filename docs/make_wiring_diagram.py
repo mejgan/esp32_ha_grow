@@ -9,7 +9,7 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 S = 2  # supersampling
-W, H = 1500, 940
+W, H = 1500, 1000
 
 COLORS = {
     "power": (214, 39, 40),
@@ -44,6 +44,10 @@ MODULES_LEFT = [
     ("Floor 2 - AHT10 #1 (LP I2C)", ["VIN 3V3, GND", "address 0x38"], [("SDA", "GPIO6"), ("SCL", "GPIO7")]),
     ("SPI TFT (optional)", ["ST7789 / ILI9341", "VCC 3V3, GND, BL 3V3, RST 3V3"],
      [("DC", "GPIO3"), ("SCL/SCK", "GPIO4"), ("SDA/MOSI", "GPIO5"), ("CS", "GPIO11")]),
+    ("Arducam Mega cameras (optional)", ["SCK GPIO4, MOSI GPIO5 (shared with a TFT)",
+                                         "MISO GPIO3, CS GPIO11 / GPIO16 / GPIO17",
+                                         "with a TFT: MISO GPIO16, CS GPIO17 / GPIO8",
+                                         "see docs/CAMERAS.md"], []),
 ]
 MODULES_RIGHT = [
     ("Floor 1 - DHT11", ["VCC 3V3, GND", "10k pull-up DATA to 3V3"], [("DATA", "GPIO18")]),

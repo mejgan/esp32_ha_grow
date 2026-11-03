@@ -16,6 +16,7 @@
 #include "esp_lcd_io_spi.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
+#include "spi_bus.h"
 
 static const char *TAG = "tft";
 
@@ -39,7 +40,7 @@ static const char *TAG = "tft";
 #define GRID_X ((SCREEN_W - COLS * CELL_W) / 2)
 #define GRID_Y ((SCREEN_H - ROWS * CELL_H) / 2)
 
-#define SPI_HOST_ID SPI2_HOST
+#define SPI_HOST_ID GB_SPI_HOST
 
 /* MIPI DCS commands shared by both controllers. */
 #define CMD_SWRESET 0x01
@@ -65,7 +66,6 @@ static const char *TAG = "tft";
     ((uint16_t)((((rgb) >> 19) & 0x1F) << 11 | (((rgb) >> 10) & 0x3F) << 5 | (((rgb) >> 3) & 0x1F)))
 
 static esp_lcd_panel_io_handle_t s_io;
-static bool s_bus_ready;
 static uint16_t *s_cell; /* one text cell of pixels, DMA capable, byte-swapped RGB565 */
 static char s_shown[GB_UI_MAX_ROWS][GB_UI_MAX_COLS];
 static uint8_t s_shown_style[GB_UI_MAX_ROWS];
@@ -186,20 +186,10 @@ esp_err_t disp_drv_init(uint8_t *cols, uint8_t *rows)
             return ESP_ERR_NO_MEM;
         }
     }
-    if (!s_bus_ready) {
-        const spi_bus_config_t bus = {
-            .mosi_io_num = CONFIG_GROWBOX_DISPLAY_SPI_MOSI_GPIO,
-            .miso_io_num = -1,
-            .sclk_io_num = CONFIG_GROWBOX_DISPLAY_SPI_SCLK_GPIO,
-            .quadwp_io_num = -1,
-            .quadhd_io_num = -1,
-            .max_transfer_sz = CELL_W * CELL_H * sizeof(uint16_t) + 8,
-        };
-        err = spi_bus_initialize(SPI_HOST_ID, &bus, SPI_DMA_CH_AUTO);
-        if (err != ESP_OK) {
-            return err;
-        }
-        s_bus_ready = true;
+    _Static_assert(CELL_W * CELL_H * sizeof(uint16_t) <= GB_SPI_MAX_TRANSFER, "TFT cell larger than an SPI transfer");
+    err = spi_bus_setup();
+    if (err != ESP_OK) {
+        return err;
     }
     if (s_io == NULL) {
         const esp_lcd_panel_io_spi_config_t io = {

@@ -15,6 +15,7 @@ typedef enum {
     APP_FIELD_MAX_TEMP,
     APP_FIELD_ON_MINUTE,
     APP_FIELD_OFF_MINUTE,
+    APP_FIELD_TAKE_PHOTO, /* not a setting: asks the floor's camera for a photo now */
 } app_field_t;
 
 /* Applies a setting of `floor` (0-based) changed from Zigbee, schedules saving it and wakes the control loop.

@@ -134,7 +134,21 @@ use a level shifter.
 | 12 mm push button in the lid | one leg **GPIO9**, other leg GND (same as the DevKit's BOOT button) |
 | USB-C breakout (case socket) | D+ → **GPIO13**, D− → **GPIO12**, GND → GND. VBUS → 1N5819 (stripe toward 5V) → 5V, optional. |
 
+## Cameras (optional)
+
+Arducam Mega SPI cameras, one per floor. The full guide is [CAMERAS.md](CAMERAS.md).
+
+| Camera pin | Without a TFT | With a TFT |
+|---|---|---|
+| SCK | GPIO4 | GPIO4 (shared) |
+| MOSI | GPIO5 | GPIO5 (shared) |
+| MISO | GPIO3 | GPIO16 |
+| CS camera 1 / 2 / 3 | GPIO11 / GPIO16 / GPIO17 | GPIO17 / GPIO8 / — |
+| VCC, GND | 3V3, GND | 3V3, GND |
+
+When a camera uses GPIO16/17, move the console to USB Serial/JTAG (see CAMERAS.md).
+
 ## Free pins left
 
-GPIO8 (DevKit RGB LED, strapping pin), GPIO14 (not on every board), GPIO16/17 (UART0 console). If you don't use a
-TFT, GPIO3/4/5/11 are free too.
+Without cameras: GPIO8 (DevKit RGB LED, strapping pin) and GPIO16/17 (UART0 console). Without a TFT or cameras,
+GPIO3/4/5/11 are free too.

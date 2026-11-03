@@ -120,6 +120,109 @@ menu "Grow Box"
             floor engages (light off) until a reading is back. A floor without its own reading uses the hottest
             other floor first, so this only happens when all temperature sensors fail.
 
+    menu "Cameras (photos over Wi-Fi to a PC)"
+        comment "Cameras need Zigbee end device mode: Component config -> Zigbee -> Zigbee Device Type -> End Device"
+            depends on !ZB_ZED
+
+        config GROWBOX_CAMERA_COUNT
+            int "Number of Arducam Mega SPI cameras (camera N looks at floor N)"
+            depends on ZB_ZED
+            range 0 3
+            default 0
+            help
+                Each camera takes a photo every GROWBOX_PHOTO_INTERVAL_MIN minutes while its floor's light is on and
+                uploads it over Wi-Fi to the photo server (tools/photo_server.py). Wi-Fi is switched on only for
+                the upload. Wi-Fi and a Zigbee router share the radio badly, so cameras need the end device role.
+
+        config GROWBOX_WIFI_SSID
+            string "Wi-Fi network name"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_WIFI_PASSWORD
+            string "Wi-Fi password"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_PHOTO_URL
+            string "Upload URL"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default "http://192.168.1.10:8088/upload"
+            help
+                http:// for a PC on the home network; https:// (with a certificate from a public CA) for a server
+                on the internet.
+
+        config GROWBOX_PHOTO_TOKEN
+            string "Upload token (must match the server's --token)"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_PHOTO_INTERVAL_MIN
+            int "Minutes between photos (only while the floor's light is on)"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            range 1 1440
+            default 30
+
+        choice GROWBOX_PHOTO_RESOLUTION
+            prompt "Photo resolution"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default GROWBOX_PHOTO_UXGA
+
+            config GROWBOX_PHOTO_HD
+                bool "1280x720"
+            config GROWBOX_PHOTO_UXGA
+                bool "1600x1200"
+            config GROWBOX_PHOTO_FHD
+                bool "1920x1080"
+            config GROWBOX_PHOTO_QXGA
+                bool "2048x1536 (3 MP / 5 MP cameras)"
+        endchoice
+
+        config GROWBOX_CAM_SPI_HZ
+            int "Camera SPI clock (Hz); lower it for long camera cables"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            range 500000 8000000
+            default 4000000
+
+        config GROWBOX_CAM_SPI_SCLK_GPIO
+            int "SPI SCLK GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0 && !GROWBOX_DISPLAY_TFT
+            default 4
+            help
+                With a TFT display the cameras share its SCLK/MOSI pins.
+
+        config GROWBOX_CAM_SPI_MOSI_GPIO
+            int "SPI MOSI GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0 && !GROWBOX_DISPLAY_TFT
+            default 5
+
+        config GROWBOX_CAM_SPI_MISO_GPIO
+            int "SPI MISO GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default 16 if GROWBOX_DISPLAY_TFT
+            default 3
+
+        config GROWBOX_CAM1_CS_GPIO
+            int "Camera 1 (floor 1) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 1
+            default 17 if GROWBOX_DISPLAY_TFT
+            default 11
+
+        config GROWBOX_CAM2_CS_GPIO
+            int "Camera 2 (floor 2) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 2
+            default 8 if GROWBOX_DISPLAY_TFT
+            default 16
+
+        config GROWBOX_CAM3_CS_GPIO
+            int "Camera 3 (floor 3) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 3
+            default 17
+            help
+                GPIO16/17 are the UART0 console pins: when a camera uses them, set the console to USB
+                (Component config -> ESP System Settings -> Channel for console output -> USB Serial/JTAG).
+    endmenu
+
     menu "Room sensor (next to the controller, outside the grow box)"
         choice GROWBOX_ROOM
             prompt "Room temperature / humidity sensor"

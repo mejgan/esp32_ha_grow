@@ -4,6 +4,7 @@
 
 #include "app.h"
 #include "button.h"
+#include "camera.h"
 #include "display.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -17,6 +18,7 @@
 #include "sdkconfig.h"
 #include "sensors.h"
 #include "settings.h"
+#include "spi_bus.h"
 #include "zb_device.h"
 #include "zb_ota.h"
 
@@ -51,6 +53,13 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
 void app_remote_set(uint8_t floor, app_field_t field, uint32_t value)
 {
     if (floor >= GB_FLOOR_COUNT) {
+        return;
+    }
+    if (field == APP_FIELD_TAKE_PHOTO) {
+        if (value != 0) {
+            camera_request(floor);
+        }
+        xTaskNotifyGive(s_app_task); /* republish, which resets the attribute */
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -107,6 +116,8 @@ void app_remote_set(uint8_t floor, app_field_t field, uint32_t value)
     case APP_FIELD_MAX_TEMP:
         s.max_temp_c = (uint8_t)clamp_u32(value, 20, 50);
         break;
+    case APP_FIELD_TAKE_PHOTO:
+        break; /* handled above */
     }
 
     bool changed = memcmp(&s, &s_settings[floor], sizeof(s)) != 0;
@@ -395,8 +406,10 @@ void app_main(void)
     BaseType_t ok = xTaskCreate(app_task, "growbox", 6144, NULL, 4, &s_app_task);
     configASSERT(ok == pdPASS);
 
+    spi_bus_setup(); /* shared by a TFT and the cameras; set up before their tasks start */
     display_start();
     button_start(on_button_short_press, on_button_long_press);
+    camera_start();
 
     ESP_ERROR_CHECK(zb_device_start(s_settings));
 }

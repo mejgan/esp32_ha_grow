@@ -6,6 +6,7 @@
 #include <sys/time.h>
 
 #include "app.h"
+#include "camera.h"
 #include "room_sensor.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -42,20 +43,34 @@ enum {
     ATTR_ON_MINUTE = 0x0009,
     ATTR_OFF_MINUTE = 0x000A,
     ATTR_SENSOR_FAULT = 0x000B,
+    ATTR_TAKE_PHOTO = 0x000C, /* only on floors with a camera; write 1 to take a photo now */
 };
 
 /* ZCL character strings: first byte is the length. */
 static const char s_manufacturer[] = "\x0A" "GrowBoxDIY";
 static const char s_model[] = "\x0A" "GrowBox-C6";
 
+#if CONFIG_ZB_ZED
+/* End device (needed with cameras: Wi-Fi and a Zigbee router share the radio badly). The receiver stays on, so
+ * commands arrive at once; the parent drops it after 64 min without a keep-alive. */
+#define ZB_DEVICE_CONFIG()                                                                       \
+    {                                                                                            \
+        .device_type = EZB_NWK_DEVICE_TYPE_END_DEVICE,                                           \
+        .install_code_policy = false,                                                            \
+        .zed_config = {.ed_timeout = EZB_NWK_ED_TIMEOUT_64MIN, .keep_alive = 4000},              \
+    }
+#else
+#define ZB_DEVICE_CONFIG()                                                                       \
+    {                                                                                            \
+        .device_type = EZB_NWK_DEVICE_TYPE_ROUTER,                                               \
+        .install_code_policy = false,                                                            \
+        .zczr_config = {.max_children = 10},                                                     \
+    }
+#endif
+
 #define ZB_CONFIG()                                                                              \
     {                                                                                            \
-        .device_config =                                                                         \
-            {                                                                                    \
-                .device_type = EZB_NWK_DEVICE_TYPE_ROUTER,                                       \
-                .install_code_policy = false,                                                    \
-                .zczr_config = {.max_children = 10},                                             \
-            },                                                                                   \
+        .device_config = ZB_DEVICE_CONFIG(),                                                     \
         .platform_config =                                                                       \
             {                                                                                    \
                 .storage_partition_name = "nvs",                                                 \
@@ -83,6 +98,7 @@ typedef struct {
     uint8_t heat_lock;
     uint8_t time_synced;
     uint8_t sensor_fault;
+    uint8_t take_photo;
 } published_t;
 
 static gb_settings_t s_initial[GB_FLOOR_COUNT];
@@ -261,6 +277,11 @@ static void handle_remote(uint8_t ep, uint16_t cluster, uint16_t attr, const voi
         case ATTR_MAX_TEMP:
             field = APP_FIELD_MAX_TEMP;
             held = &pub->max_temp;
+            break;
+        case ATTR_TAKE_PHOTO:
+            v = v != 0;
+            field = APP_FIELD_TAKE_PHOTO;
+            held = &pub->take_photo;
             break;
         default:
             return;
@@ -461,6 +482,9 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_ON_MINUTE, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->on_minute));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_OFF_MINUTE, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->off_minute));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_SENSOR_FAULT, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->sensor_fault));
+    if (floor < camera_count()) {
+        ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_TAKE_PHOTO, EZB_ZCL_ATTR_TYPE_BOOL, true, &a->take_photo));
+    }
     ESP_ERROR_CHECK(add_cluster(ep, custom));
 
     s_pub[floor] = *a;
@@ -719,6 +743,10 @@ void zb_device_publish_floor_state(uint8_t floor, const gb_settings_t *s, gb_lig
     publish_u8(ep, &p->max_temp, s->max_temp_c, GROWBOX_CLUSTER_ID, ATTR_MAX_TEMP);
     publish_u8(ep, &p->heat_lock, heat_lock, GROWBOX_CLUSTER_ID, ATTR_HEAT_LOCK);
     publish_u8(ep, &p->sensor_fault, sensor_fault, GROWBOX_CLUSTER_ID, ATTR_SENSOR_FAULT);
+    if (floor < camera_count()) {
+        /* Momentary: a remote "take photo" write is answered by going back to 0. */
+        publish_u8(ep, &p->take_photo, 0, GROWBOX_CLUSTER_ID, ATTR_TAKE_PHOTO);
+    }
     esp_zigbee_lock_release();
 }
 

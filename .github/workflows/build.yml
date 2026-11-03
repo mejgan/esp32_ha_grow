@@ -41,12 +41,12 @@ jobs:
           python case/growbox_case.py --check --out stl-check
 
   firmware:
-    name: Firmware (${{ matrix.display }} + room sensor variant)
+    name: Firmware (${{ matrix.display }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        display: [none, ssd1306_128x64, ssd1306_128x32, sh1106, lcd_1602, lcd_2004, st7789, ili9341]
+        display: [none, ssd1306_128x64, ssd1306_128x32, sh1106, lcd_1602, lcd_2004, st7789, ili9341, camera, camera_tft]
     steps:
       - uses: actions/checkout@v4
       - name: Build with ESP-IDF
@@ -55,6 +55,11 @@ jobs:
           esp_idf_version: v6.0.3
           target: esp32c6
           command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;ci/sdkconfig.${{ matrix.display }}" build
+      - name: Camera builds really have cameras and the end device role
+        if: startsWith(matrix.display, 'camera')
+        run: |
+          grep -E '^CONFIG_ZB_ZED=y' sdkconfig
+          grep -E '^CONFIG_GROWBOX_CAMERA_COUNT=[123]' sdkconfig
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.display }}

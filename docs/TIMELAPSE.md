@@ -1,6 +1,12 @@
 # Plant time-lapse with a camera
 
-## Why not a camera on the GrowBox ESP32-C6
+There are two ways:
+- **Cameras plugged into the GrowBox** (Arducam Mega on SPI, photos uploaded over Wi-Fi to your PC). The box then
+  runs as a Zigbee end device. See [CAMERAS.md](CAMERAS.md).
+- **Separate ESP32-CAM boards** on Wi-Fi with ESPHome and Home Assistant, described below. The GrowBox stays a
+  Zigbee router.
+
+## Why a camera can't simply hang off the ESP32-C6 like on an ESP32-CAM
 
 - **No camera interface.** Cameras like the OV2640 need a parallel camera port (about 11 pins) and several
   megabytes of frame memory (PSRAM). The ESP32-C6 has neither: no camera port, no PSRAM, 512 KB RAM.
@@ -9,8 +15,8 @@
   else.
 - **The C6's Wi-Fi shares the radio with Zigbee**, so sending photos over Wi-Fi from the same chip makes the Zigbee
   side less reliable.
-- SPI cameras with their own frame buffer (ArduCAM Mini) would technically connect, but they still need Wi-Fi to
-  get the pictures out, so they hit the same radio problem.
+- SPI cameras with their own frame buffer (Arducam Mega) do connect. Getting the pictures out over Wi-Fi is stable
+  only with the GrowBox as a Zigbee end device, which is what [CAMERAS.md](CAMERAS.md) does.
 
 ## What works well: a separate camera board
 

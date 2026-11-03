@@ -2,6 +2,7 @@ idf_component_register(SRC_DIRS "."
                        PRIV_INCLUDE_DIRS "."
                        PRIV_REQUIRES nvs_flash esp_driver_gpio esp_driver_i2c esp_driver_ledc esp_driver_rmt
                                      esp_driver_spi esp_lcd esp_adc esp_timer app_update
+                                     esp_wifi esp_netif esp_event esp_http_client esp_coex mbedtls
                                      growbox_logic growbox_ui)
 
 # Zigbee OTA file version from PROJECT_VER "major.minor.patch" (top-level CMakeLists.txt): 0xMMmmpp00.

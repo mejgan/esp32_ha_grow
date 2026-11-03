@@ -21,6 +21,11 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
   - Set from the Zigbee coordinator (Zigbee2MQTT).
   - Survives crashes, watchdog resets and OTA restarts, so the schedule keeps running without the network.
   - Lost only on power loss; until the next sync, auto mode keeps the lights off.
+- **Cameras (optional):** up to three Arducam Mega SPI cameras, one per floor.
+  - While a floor's light is on, its camera takes a photo every 30 minutes and uploads it over Wi-Fi to a small
+    server on your PC (`tools/photo_server.py`).
+  - The server also makes the time-lapse videos.
+  - Needs the Zigbee end-device role. See [docs/CAMERAS.md](docs/CAMERAS.md).
 - **Room sensor (optional):** a temperature + humidity sensor next to the controller, outside the grow box.
   - Supported: DHT22, DHT11, SHT3x, SHT4x, HTU21D/Si7021, or BME280 (which adds pressure).
   - In Home Assistant it shows up like a plain Zigbee climate sensor (`temperature_room`, `humidity_room`).
@@ -36,7 +41,8 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
 ## Hardware
 
 **Wiring for every sensor, the LED strips, power, displays, button and the optional room sensor:
-[docs/WIRING.md](docs/WIRING.md).** Plant time-lapse with a camera: [docs/TIMELAPSE.md](docs/TIMELAPSE.md).
+[docs/WIRING.md](docs/WIRING.md).** Plant time-lapse: [docs/CAMERAS.md](docs/CAMERAS.md) (cameras on the GrowBox) or
+[docs/TIMELAPSE.md](docs/TIMELAPSE.md) (separate ESP32-CAM boards).
 
 A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md). Its USB-C socket is a
 breakout board wired to the ESP32-C6's built-in USB: GPIO13 = D+, GPIO12 = D-.
@@ -165,6 +171,7 @@ Note the mV in dry air and in water and set them in *Grow Box → Soil sensor ca
 - `test/host`: unit tests for both components, plus `ui_preview`, which renders every page of every display type
   to images.
 - `tools/make_ota_image.py`: wraps `growbox.bin` into a Zigbee OTA file.
+- `tools/photo_server.py`: PC server for the camera photos, and the time-lapse videos.
 - `case/`: enclosure generator, STLs and previews.
 - `docs/`: wiring guide and diagram (`make_wiring_diagram.py` redraws it), camera time-lapse guide.
 

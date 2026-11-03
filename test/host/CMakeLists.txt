@@ -47,4 +47,8 @@ if(Python3_FOUND)
                    '${OTA_WORK}/app.bin' '${OTA_WORK}/app.ota' \
             && '$<TARGET_FILE:ota_check>' verify '${OTA_WORK}/app.bin' '${OTA_WORK}/app.ota' 0x131B 0x4742 0x02010300 \
             && grep -q '\"fileVersion\": 33620736' '${OTA_WORK}/index.json'")
+    # PC photo server (tools/photo_server.py) used by the cameras.
+    add_test(NAME photo_server
+        COMMAND ${Python3_EXECUTABLE} -m unittest test_photo_server
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
