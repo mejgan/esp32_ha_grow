@@ -32,6 +32,8 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
 
 ## Hardware
 
+A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md).
+
 Default pins (all changeable in `idf.py menuconfig` → *Grow Box*):
 
 | Function | GPIO | Notes |
@@ -154,6 +156,7 @@ Note the mV in dry air and in water and set them in *Grow Box → Soil sensor ca
 - `test/host`: unit tests for both components, plus `ui_preview`, which renders every page of every display type
   to images.
 - `tools/make_ota_image.py`: wraps `growbox.bin` into a Zigbee OTA file.
+- `case/`: enclosure generator, STLs and previews.
 
 Run the host tests:
 

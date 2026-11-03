@@ -27,6 +27,19 @@ jobs:
       - name: Check the Zigbee2MQTT converter parses
         run: node --check z2m/growbox.mjs
 
+  case:
+    name: Enclosure collision check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build every part and check the fit
+        run: |
+          pip install manifold3d numpy
+          python case/growbox_case.py --check --out stl-check
+
   firmware:
     name: Firmware (${{ matrix.display }})
     runs-on: ubuntu-latest
