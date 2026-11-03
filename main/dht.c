@@ -5,6 +5,9 @@
  * The receiver is armed before the start pulse and captures the whole exchange: host start (DHT11 ~20 ms,
  * DHT22 ~2 ms low), sensor response (80 us low + 80 us high) and 40 bits (50 us low + 26/70 us high). It stops
  * after the line has been idle for DHT_IDLE_US.
+ *
+ * The RMT channel is only held during a read, so any number of DHT sensors work although the ESP32-C6 has two
+ * receive channels (reads run one after another from the sensor task).
  */
 #include "dht.h"
 
@@ -31,7 +34,7 @@ static bool rx_done_cb(rmt_channel_handle_t chan, const rmt_rx_done_event_data_t
     return woken == pdTRUE;
 }
 
-static esp_err_t dht_init(dht_t *dev)
+static esp_err_t channel_open(dht_t *dev)
 {
     const gpio_config_t io = {
         .pin_bit_mask = 1ULL << dev->pin,
@@ -79,16 +82,34 @@ static esp_err_t dht_init(dht_t *dev)
     return err;
 }
 
+static void channel_close(dht_t *dev)
+{
+    if (dev->chan != NULL) {
+        rmt_disable(dev->chan);
+        rmt_del_channel(dev->chan);
+        dev->chan = NULL;
+    }
+    /* Leave the line released (pulled up) between reads. */
+    gpio_set_direction(dev->pin, GPIO_MODE_INPUT_OUTPUT_OD);
+    gpio_set_level(dev->pin, 1);
+}
+
+static esp_err_t read_frame(dht_t *dev, float *temp_c, float *rh);
+
 esp_err_t dht_read(dht_t *dev, float *temp_c, float *rh)
 {
-    if (dev->chan == NULL) {
-        esp_err_t err = dht_init(dev);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "RMT setup on GPIO%d failed: %s", dev->pin, esp_err_to_name(err));
-            return err;
-        }
+    esp_err_t err = channel_open(dev);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "RMT setup on GPIO%d failed: %s", dev->pin, esp_err_to_name(err));
+        return err;
     }
+    err = read_frame(dev, temp_c, rh);
+    channel_close(dev);
+    return err;
+}
 
+static esp_err_t read_frame(dht_t *dev, float *temp_c, float *rh)
+{
     xQueueReset(dev->done);
     const rmt_receive_config_t rx = {
         .signal_range_min_ns = DHT_GLITCH_NS,
@@ -105,9 +126,6 @@ esp_err_t dht_read(dht_t *dev, float *temp_c, float *rh)
 
     size_t n = 0;
     if (xQueueReceive(dev->done, &n, pdMS_TO_TICKS(DHT_TIMEOUT_MS) + 1) != pdTRUE) {
-        /* Abort the pending receive so the next read starts clean. */
-        rmt_disable(dev->chan);
-        rmt_enable(dev->chan);
         ESP_LOGW(TAG, "GPIO%d: no transfer captured", dev->pin);
         return ESP_ERR_TIMEOUT;
     }

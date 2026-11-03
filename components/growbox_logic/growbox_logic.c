@@ -136,6 +136,11 @@ float gb_temt6000_lux(int mv)
     return mv * 0.2f;
 }
 
+float gb_bh1750_lux(const uint8_t raw[2])
+{
+    return (float)((raw[0] << 8) | raw[1]) / 1.2f;
+}
+
 uint16_t gb_lux_to_zcl(float lux)
 {
     if (lux < 1.0f) {

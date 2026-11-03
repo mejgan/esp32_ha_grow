@@ -76,10 +76,13 @@ static esp_err_t find_address(i2c_master_bus_handle_t bus, uint16_t *addr)
         *addr = CONFIG_GROWBOX_DISPLAY_I2C_ADDR;
         return ESP_OK;
     }
-    /* PCF8574 0x20-0x27, PCF8574A 0x38-0x3F. 0x38 is skipped: that is the AHT10 sharing the bus. */
+    /* PCF8574 0x20-0x27, PCF8574A 0x38-0x3F, skipping the sensors on this bus (an AHT at 0x38, a BH1750 at 0x23). */
     static const uint8_t candidates[] = {0x27, 0x3F, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
-                                         0x20, 0x3E, 0x3D, 0x3C, 0x3B, 0x3A, 0x39};
+                                         0x20, 0x3E, 0x3D, 0x3C, 0x3B, 0x3A, 0x39, 0x38};
     for (size_t i = 0; i < sizeof(candidates); i++) {
+        if (sensors_i2c_addr_in_use(DISPLAY_BUS, candidates[i])) {
+            continue;
+        }
         if (i2c_master_probe(bus, candidates[i], 50) == ESP_OK) {
             *addr = candidates[i];
             return ESP_OK;

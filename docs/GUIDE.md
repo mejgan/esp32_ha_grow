@@ -51,7 +51,14 @@ the board, the toolchain and Zigbee2MQTT all work before the hardware work start
 | 3 | AHT10, BMP180, TEMT6000 light sensor |
 | each | 12 V LED strip or grow light bar |
 
-Other sensors can work too, but the firmware expects these ones on these floors.
+**Other sensors work too.** Each floor can have its own:
+- temperature / humidity sensor: DHT11, DHT22, AHT10/AHT20, SHT3x, SHT4x, HTU21D/Si7021 or BME280;
+- pressure sensor: BMP180 or BMP280;
+- soil sensor: capacitive or resistive;
+- light sensor: TEMT6000 or BH1750.
+
+Any of these can also be left out. You pick them per floor in menuconfig (step 3). The wiring for each kind is in
+[WIRING.md](WIRING.md#other-floor-sensors).
 
 ### Case and cables
 
@@ -171,12 +178,15 @@ All project settings are under **Grow Box**:
 | *Room sensor* | Your room sensor, or *None*. |
 | *Button* | Leave GPIO9. That's the DevKit's BOOT button and the lid button. |
 | *Default settings* | Light on/off hours, brightness and max temperature for the first boot. You can change all of these later from Home Assistant. |
-| *Floor N pins* | Leave the defaults, unless you wire differently. |
-| *Soil sensor calibration* | Leave for now; see [section 11](#11-calibrate-the-soil-sensors). |
+| *Floor N: sensors and LED strip* | Each floor's temperature / humidity, pressure, soil and light sensor, their pins, I2C bus and address, and the soil calibration (leave that for now; see [section 11](#11-calibrate-the-soil-sensors)). Leave the defaults if you use the default sensors. |
+| *I2C buses* | Pins of the main I2C bus. Leave GPIO22 / GPIO23. |
 | *Cameras* | Only with cameras; see [CAMERAS.md](CAMERAS.md#firmware-setup). |
 
 Settings take effect only after a rebuild and flash. To change something later, run `idf.py menuconfig` again
 and flash again.
+
+**The build checks your choices.** If two things use the same GPIO, or two I2C sensors on the same bus have the
+same address, the build stops with a list of what clashes. Fix the clashes in menuconfig and build again.
 
 ### Build
 
@@ -315,10 +325,12 @@ Order of work:
    | Drain | − of that floor's LED terminal (thick wire) |
 
 5. **Sensor terminals**, one 8-pin terminal or JST-XH per floor, along the bottom edge. Wire each one to its DevKit
-   pins and to 3V3 / GND as in [WIRING.md](WIRING.md):
+   pins and to 3V3 / GND as in [WIRING.md](WIRING.md). With the default sensors:
    - Floor 1: 3V3, GND, GPIO18 (DHT11), GPIO0 (soil).
    - Floor 2: 3V3, GND, GPIO6 / GPIO7 (I2C), GPIO1 (soil), GPIO10 (soil power).
    - Floor 3: 3V3, GND, GPIO22 / GPIO23 (I2C), GPIO2 (light).
+
+   With other sensors, use the pins you set in menuconfig.
 
    Find the GPIO numbers on the labels printed next to the DevKit's pins. If your DHT11 is a bare 4-pin sensor
    (not on a small board), add a 10 kΩ pull-up from GPIO18 to 3V3 on the perfboard.
@@ -366,11 +378,14 @@ Use one Cat5 cable per floor. Run each signal in a pair with GND, as in the pair
 [WIRING.md](WIRING.md#cables-to-the-floors). At the floor end, solder or crimp the sensor boards on and protect
 the joints with heat-shrink.
 
-| Floor | Sensors | Cable notes |
+| Floor | Default sensors | Cable notes |
 |---|---|---|
 | 1 | DHT11, capacitive soil | Mount the DHT11 at plant height, out of direct light. |
 | 2 | AHT10, YL-69 soil | The YL-69 gets power only while it reads, so the probe corrodes slowly. |
 | 3 | AHT10, BMP180, TEMT6000 | The AHT10 and BMP180 share the I2C wires. |
+
+With other sensors: a DHT gets one data wire, all I2C sensors of a floor share its SDA and SCL wires, and analog
+sensors get one signal wire each.
 
 General notes:
 - **Sensor placement:** keep the temperature sensors out of the LED's direct light and heat, or the over-temperature
@@ -425,10 +440,16 @@ device page (*Settings → Devices & services → MQTT → GrowBox-C6*) you get,
 | `max_temperature_floorN` | number | Over-temperature cutoff, 20–50 °C (2 °C hysteresis). |
 | `enabled_floorN` | switch | OFF: the floor isn't used. Its light stays off and its sensors aren't read. |
 | `temperature/humidity_floorN` | sensor | Floor climate |
-| `soil_moisture_floor1/2` | sensor | Soil, 0–100 % after calibration |
-| `pressure_floor3`, `illuminance_floor3` | sensor | From the BMP180 and TEMT6000 |
+| `soil_moisture_floorN` | sensor | Soil, 0–100 % after calibration |
+| `pressure_floorN`, `illuminance_floorN` | sensor | From a pressure or light sensor |
 | `heat_lock_floorN` | binary | ON while the cutoff holds the light off |
 | `sensor_fault_floorN` | binary | ON while a sensor on that floor gives no reading |
+
+Readings only appear for the sensors a floor has. With the default sensors that's soil moisture on floors 1 and
+2, and pressure and light on floor 3.
+
+**After changing a floor's sensors** and flashing: on the Zigbee2MQTT device page, click *Interview*, then
+*Reconfigure*. Zigbee2MQTT then shows the new set of readings.
 
 For the whole device there is also:
 - `time_synced`;
@@ -448,8 +469,8 @@ For the whole device there is also:
 - After a power loss, auto mode keeps the lights off until the clock is synced again, which takes a few seconds once
   Zigbee2MQTT is reachable.
 - Ideas for automations: notify on `heat_lock` or `sensor_fault`; water when `soil_moisture` drops below a level.
-- The TEMT6000 tops out at about 600 lx with this circuit, so under grow lights `illuminance_floor3` sits at the
-  maximum. It still tells you whether the light is on.
+- The TEMT6000 tops out at about 600 lx with this circuit, so under grow lights it sits at the maximum. It still
+  tells you whether the light is on. For real light levels under grow lights, use a BH1750.
 
 ---
 
@@ -460,10 +481,8 @@ Do this with the final cable in place, because cable length shifts the readings 
 1. **Read the dry value.** Open the log (`idf.py -p PORT monitor`) and note the `mV` value of the soil sensor
    held in dry air. Example: `soil ok 2750mV`.
 2. **Read the wet value.** Put the sensor in a glass of water, up to its line, and note the value again.
-3. **Enter both values.** In `idf.py menuconfig` → *Grow Box → Soil sensor calibration*, enter the dry and wet
-   values for that sensor.
-   - Floor 1: capacitive.
-   - Floor 2: YL-69.
+3. **Enter both values.** In `idf.py menuconfig` → *Grow Box → Floor N*, enter them as *Soil sensor reading in dry
+   air* and *Soil sensor reading in water*.
 4. Build and flash again.
 
 Both sensors read lower in water than in dry air. The firmware maps the dry value to 0 % and the wet value to
@@ -559,6 +578,8 @@ How it behaves:
 | Box doesn't start when powered up | The lid button or BOOT is held or stuck: GPIO9 low at power-up means download mode. |
 | Device doesn't appear in Zigbee2MQTT | Turn *Permit join* on. Move the box closer to the coordinator or a router. Hold the button 10 s to restart pairing. If Zigbee2MQTT still lists an old entry for it, remove that first. |
 | *Unsupported* in Zigbee2MQTT | Converter not loaded. Check `advanced: enable_external_js: true` and `external_converters/growbox.mjs`, restart Zigbee2MQTT, then click *Reconfigure* on the device. |
+| A reading is missing in Zigbee2MQTT, or an old one stays | After changing sensors: click *Interview*, then *Reconfigure* on the device page. |
+| Build stops with *Grow Box configuration problem* | Two things share a GPIO, or two I2C devices on one bus share an address. The message names them; change one in menuconfig. |
 | Lights stay off in auto mode | Check: `time_synced` is on, the time is inside the window, `enabled` is on, `heat_lock` is off. |
 | Clock is off by some hours | Fix the time zone of the machine running Zigbee2MQTT (`TZ` in Docker). |
 | Light refuses to turn on | The floor is heat-locked (too hot) or disabled. |

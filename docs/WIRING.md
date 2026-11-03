@@ -2,7 +2,8 @@
 
 ![wiring overview](wiring.png)
 
-All pins below are the defaults. Any of them can be changed in `idf.py menuconfig` → *Grow Box*.
+All pins below are the defaults. Any of them can be changed in `idf.py menuconfig` → *Grow Box*. Each floor's
+sensors can be changed too: see [Other floor sensors](#other-floor-sensors).
 
 Use one common ground for everything: power supply −, buck converter, DevKit GND, MOSFET sources and every
 sensor. All sensors run on **3.3 V**. The ESP32-C6 pins are not 5 V tolerant.
@@ -35,7 +36,11 @@ Avoid IRF520 modules: their gate needs about 10 V, so at 3.3 V they only half sw
 
 The 10 kΩ pull-down keeps the light off while the ESP32 boots.
 
-## Floor 1: DHT11 + capacitive soil sensor
+## Default floor sensors
+
+These are the sensors each floor has unless you choose others in menuconfig.
+
+### Floor 1: DHT11 + capacitive soil sensor
 
 | Sensor pin | ESP32 pin |
 |---|---|
@@ -46,7 +51,7 @@ The 10 kΩ pull-down keeps the light off while the ESP32 boots.
 | Soil AOUT | **GPIO0** (ADC) |
 | Soil GND | GND |
 
-## Floor 2: AHT10 #1 + YL-69 / FC-28 soil sensor
+### Floor 2: AHT10 #1 + YL-69 / FC-28 soil sensor
 
 | Sensor pin | ESP32 pin |
 |---|---|
@@ -59,7 +64,7 @@ The 10 kΩ pull-down keeps the light off while the ESP32 boots.
 | YL-69 module GND | GND |
 | YL-69 module DO | not used |
 
-## Floor 3: AHT10 #2 + BMP180 + TEMT6000
+### Floor 3: AHT10 #2 + BMP180 + TEMT6000
 
 The AHT10 and the BMP180 share one I2C bus (addresses 0x38 and 0x77).
 
@@ -72,6 +77,62 @@ The AHT10 and the BMP180 share one I2C bus (addresses 0x38 and 0x77).
 | TEMT6000 VCC | 3V3 |
 | TEMT6000 SIG | **GPIO2** (ADC) |
 | TEMT6000 GND | GND |
+
+## Other floor sensors
+
+Every floor has four sensor slots, each set in `idf.py menuconfig` → *Grow Box → Floor N*. Any slot can be
+*None*.
+
+| Slot | Choices |
+|---|---|
+| Temperature / humidity | DHT11, DHT22 / AM2302, AHT10 / AHT20 / AHT21, SHT30 / SHT31 / SHT35, SHT40 / SHT41 / SHT45, HTU21D / SHT21 / Si7021, BME280 (adds pressure) |
+| Pressure | BMP180 / BMP085, BMP280. Its temperature stands in when the temperature / humidity sensor fails. |
+| Soil moisture | Capacitive v1.2 / v2.0, YL-69 / FC-28 resistive module |
+| Light | TEMT6000 (analog, tops out at about 600 lx), BH1750 / GY-30 (I2C, up to 65000 lx, so it also works under grow lights) |
+
+How each kind connects:
+
+| Kind | Wiring | Settings in *Floor N* |
+|---|---|---|
+| DHT11 / DHT22 | VCC 3V3, GND, DATA to any free GPIO with a 10 kΩ pull-up to 3V3 | *DATA GPIO* |
+| I2C sensors: AHT, SHT, HTU21D, BME280, BMP180, BMP280, BH1750 | VIN 3V3, GND, SDA and SCL of the floor's bus | *I2C bus for this floor's sensors*, and the address where the chip has a choice |
+| Analog: soil sensors, TEMT6000 | VCC 3V3, GND, signal to an ADC pin (**GPIO0–6**) | the signal GPIO; for soil also the VCC GPIO (or -1) and the dry / wet calibration |
+
+**The two I2C buses:**
+- **Main bus:** GPIO22 = SDA, GPIO23 = SCL by default; change them in *Grow Box → I2C buses*.
+- **LP bus:** fixed to GPIO6 = SDA, GPIO7 = SCL.
+
+All I2C sensors of one floor go on that floor's bus. Several floors and the room sensor and display can share a
+bus, as long as no two devices on it have the same address:
+
+| Sensor | Address |
+|---|---|
+| AHT10 / AHT20 / AHT21 | 0x38, fixed |
+| SHT30 / SHT31 / SHT35 | 0x44 (ADDR to GND) or 0x45 (ADDR to VDD) |
+| SHT40 / SHT41 / SHT45 | 0x44 |
+| HTU21D / SHT21 / Si7021 | 0x40 |
+| BME280 / BMP280 | 0x76 (SDO to GND) or 0x77 (SDO to VDD) |
+| BMP180 / BMP085 | 0x77 |
+| BH1750 / GY-30 | 0x23 (ADDR to GND or open) or 0x5C (ADDR to VDD) |
+| OLED display | 0x3C / 0x3D |
+| LCD backpack (PCF8574) | 0x20–0x27, 0x38–0x3F |
+
+So two AHT10s need one bus each (the default layout), and a third AHT10 can't be added. Use another type for it.
+
+**The build checks the wiring plan.** If two things share a GPIO, or two devices on one bus share an address,
+`idf.py build` stops with a list such as:
+
+```
+Grow Box configuration problem (fix it in idf.py menuconfig -> Grow Box):
+  - floor 2 temperature/humidity sensor and floor 3 temperature/humidity sensor both use I2C address 0x38 on the main bus: change an address or move one to the other bus
+```
+
+**Other things to know:**
+- **DHT count:** any number of DHT sensors works, including a DHT room sensor.
+- **No temperature sensor:** a floor without one uses the hottest other floor for its over-temperature cutoff. With
+  no temperature sensor on any floor, the cutoff and the failsafe are off.
+- **Zigbee2MQTT:** after changing a floor's sensors and flashing, open the device page in Zigbee2MQTT and click
+  *Interview*, then *Reconfigure*. The new readings then show up, and the old ones go away.
 
 ## Cables to the floors
 
@@ -94,7 +155,10 @@ Each floor has two cable holes in the case: the lower one for the LED strip, the
 - For longer runs use an I2C extender (P82B715).
 
 **Analog soil sensors:** keep the cable under about 3 m. Calibrate the dry and wet readings with the final cable
-in place (see the README).
+in place (see [the build guide](GUIDE.md#11-calibrate-the-soil-sensors)).
+
+**Other sensors:** wire a DHT like floor 1 (DATA in a pair with GND), and I2C sensors like floors 2 and 3 (SDA
+and SCL each in a pair with GND).
 
 ## Room sensor (optional, next to the controller)
 
@@ -112,16 +176,17 @@ the electronics don't warm it up.
 | SHT30 / SHT31 / SHT35 | VIN 3V3, GND, SDA **GPIO22**, SCL **GPIO23** | very accurate; address 0x44 (ADDR to GND) or 0x45 |
 | SHT40 / SHT41 / SHT45 | same I2C pins | very accurate; address 0x44 |
 | HTU21D / SHT21 / Si7021 (GY-21) | same I2C pins | address 0x40 |
+| AHT10 / AHT20 / AHT21 | same I2C pins | address 0x38: only when no floor sensor on that bus is an AHT (the default floors 2 and 3 use one on each bus) |
 | BME280 | same I2C pins, **SDO to GND** (address 0x76) | adds air pressure. A BMP280 (purple boards are often BMP280) has no humidity. |
 
-The I2C sensors can also go on the LP bus (GPIO6/7) instead; set that in menuconfig. AHT10 / AHT20 cannot be the
-room sensor: their fixed address 0x38 is already taken on both buses by the floor 2 and floor 3 AHT10s.
+The I2C sensors can also go on the LP bus (GPIO6/7) instead; set that in menuconfig. The build stops if the room
+sensor's address is already taken on its bus.
 
 ## Display (optional)
 
 | Display | Wiring |
 |---|---|
-| SSD1306 / SH1106 OLED, PCF8574 LCD backpack | VCC 3V3 (LCD: 5V), GND, SDA **GPIO22**, SCL **GPIO23** (shares the floor 3 bus) |
+| SSD1306 / SH1106 OLED, PCF8574 LCD backpack | VCC 3V3 (LCD: 5V), GND, SDA **GPIO22**, SCL **GPIO23** (shares the main I2C bus) |
 | ST7789 / ILI9341 SPI TFT | VCC 3V3, GND, SCL/SCK **GPIO4**, SDA/MOSI **GPIO5**, CS **GPIO11**, DC **GPIO3**, RST and BL to 3V3 |
 
 A 5 V LCD backpack pulls SDA/SCL up to 5 V. Remove its two pull-up resistors (usually 4.7 kΩ near the header) or
@@ -150,5 +215,11 @@ When a camera uses GPIO16/17, move the console to USB Serial/JTAG (see CAMERAS.m
 
 ## Free pins left
 
-Without cameras: GPIO8 (DevKit RGB LED, strapping pin) and GPIO16/17 (UART0 console). Without a TFT or cameras,
-GPIO3/4/5/11 are free too.
+With the default sensors and no display, cameras or room sensor:
+- **GPIO3, 4, 5:** free, and ADC-capable, so they also take analog sensors. A TFT or cameras use them.
+- **GPIO11, 15:** free. A TFT or a camera uses GPIO11; a DHT room sensor uses GPIO15.
+- **GPIO16, 17:** the UART0 console. They become free when the console moves to USB Serial/JTAG.
+- **GPIO8:** the DevKit's RGB LED and a strapping pin. Best left alone.
+- **GPIO2:** free when floor 3 has no TEMT6000; **GPIO0, 1, 10** likewise without the default soil sensors.
+
+GPIO24–30 are the flash pins and can't be used.

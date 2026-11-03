@@ -5,6 +5,9 @@ idf_component_register(SRC_DIRS "."
                                      esp_wifi esp_netif esp_event esp_http_client esp_coex mbedtls
                                      growbox_logic growbox_ui)
 
+# Stop the build on GPIO or I2C address clashes in the configuration.
+include(${CMAKE_CURRENT_LIST_DIR}/check_config.cmake)
+
 # Zigbee OTA file version from PROJECT_VER "major.minor.patch" (top-level CMakeLists.txt): 0xMMmmpp00.
 # tools/make_ota_image.py derives the same number, so the OTA file and the running firmware always agree.
 idf_build_get_property(project_ver PROJECT_VER)

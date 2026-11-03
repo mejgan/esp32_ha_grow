@@ -89,6 +89,9 @@ uint16_t gb_soil_pct_x100(int mv, int dry_mv, int wet_mv);
 /* TEMT6000 with 10 kOhm load: lux = V * 200. */
 float gb_temt6000_lux(int mv);
 
+/* BH1750 high-resolution result (2 bytes, MSB first) in lux: raw / 1.2. */
+float gb_bh1750_lux(const uint8_t raw[2]);
+
 /* ZCL Illuminance MeasuredValue encoding: 10000 * log10(lux) + 1. */
 uint16_t gb_lux_to_zcl(float lux);
 

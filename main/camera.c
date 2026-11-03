@@ -65,15 +65,6 @@ static const int k_cs[3] = {
 #endif
 };
 
-/* GPIO16/17 carry the UART0 console unless it is moved to USB. */
-#if defined(CONFIG_ESP_CONSOLE_UART_DEFAULT) &&                                                                    \
-    (CONFIG_GROWBOX_CAM_SPI_MISO_GPIO == 16 || CONFIG_GROWBOX_CAM_SPI_MISO_GPIO == 17 ||                           \
-     CONFIG_GROWBOX_CAM1_CS_GPIO == 16 || CONFIG_GROWBOX_CAM1_CS_GPIO == 17 ||                                     \
-     (N_CAM >= 2 && (CONFIG_GROWBOX_CAM2_CS_GPIO == 16 || CONFIG_GROWBOX_CAM2_CS_GPIO == 17)) ||                    \
-     (N_CAM >= 3 && (CONFIG_GROWBOX_CAM3_CS_GPIO == 16 || CONFIG_GROWBOX_CAM3_CS_GPIO == 17)))
-#error "A camera uses GPIO16/17 (UART0): set Component config -> ESP System Settings -> Channel for console output -> USB Serial/JTAG"
-#endif
-
 static arducam_t s_cam[N_CAM];
 static bool s_cam_ok[N_CAM];
 static int64_t s_last_us[N_CAM];
@@ -88,63 +79,6 @@ void camera_request(uint8_t floor)
     }
     __atomic_fetch_or(&s_requests, 1u << floor, __ATOMIC_SEQ_CST);
     xTaskNotifyGive(s_task);
-}
-
-/* Every pin some feature uses; a camera pin that appears twice disables the cameras. */
-static bool pins_ok(void)
-{
-    int pins[40];
-    const char *what[40];
-    int n = 0;
-#define ADD(p, w)            \
-    do {                     \
-        if ((p) >= 0) {      \
-            pins[n] = (p);   \
-            what[n++] = (w); \
-        }                    \
-    } while (0)
-    ADD(CONFIG_GROWBOX_F1_DHT11_GPIO, "floor 1 DHT11");
-    ADD(CONFIG_GROWBOX_F1_SOIL_CAP_GPIO, "floor 1 soil");
-    ADD(CONFIG_GROWBOX_F1_LIGHT_PWM_GPIO, "floor 1 light");
-    ADD(CONFIG_GROWBOX_F2_SOIL_RES_GPIO, "floor 2 soil");
-    ADD(CONFIG_GROWBOX_F2_SOIL_RES_PWR_GPIO, "floor 2 soil power");
-    ADD(CONFIG_GROWBOX_F2_LIGHT_PWM_GPIO, "floor 2 light");
-    ADD(CONFIG_GROWBOX_F3_I2C_SDA_GPIO, "I2C SDA");
-    ADD(CONFIG_GROWBOX_F3_I2C_SCL_GPIO, "I2C SCL");
-    ADD(CONFIG_GROWBOX_F3_LIGHT_SENSOR_GPIO, "floor 3 light sensor");
-    ADD(CONFIG_GROWBOX_F3_LIGHT_PWM_GPIO, "floor 3 light");
-    ADD(6, "LP I2C SDA");
-    ADD(7, "LP I2C SCL");
-    ADD(12, "USB D-");
-    ADD(13, "USB D+");
-    ADD(CONFIG_GROWBOX_BUTTON_GPIO, "button");
-#if CONFIG_GROWBOX_ROOM_DHT
-    ADD(CONFIG_GROWBOX_ROOM_GPIO, "room sensor");
-#endif
-#if CONFIG_GROWBOX_DISPLAY_TFT
-    ADD(CONFIG_GROWBOX_DISPLAY_SPI_CS_GPIO, "TFT CS");
-    ADD(CONFIG_GROWBOX_DISPLAY_SPI_DC_GPIO, "TFT DC");
-    ADD(CONFIG_GROWBOX_DISPLAY_SPI_RST_GPIO, "TFT RST");
-    ADD(CONFIG_GROWBOX_DISPLAY_BL_GPIO, "TFT backlight");
-#endif
-    int first_cam = n;
-    ADD(GB_SPI_SCLK, "SPI SCLK");
-    ADD(GB_SPI_MOSI, "SPI MOSI");
-    ADD(GB_SPI_MISO, "camera SPI MISO");
-    for (int i = 0; i < N_CAM; i++) {
-        ADD(k_cs[i], "camera CS");
-    }
-#undef ADD
-    bool ok = true;
-    for (int i = first_cam; i < n; i++) {
-        for (int j = 0; j < i; j++) {
-            if (pins[i] == pins[j]) {
-                ESP_LOGE(TAG, "GPIO%d is used by both %s and %s", pins[i], what[j], what[i]);
-                ok = false;
-            }
-        }
-    }
-    return ok;
 }
 
 static void timestamp(char *buf, size_t n)
@@ -278,12 +212,9 @@ static void camera_task(void *arg)
     }
 }
 
+/* Pin clashes (including the UART0 console on GPIO16/17) stop the build: main/check_config.cmake. */
 void camera_start(void)
 {
-    if (!pins_ok()) {
-        ESP_LOGE(TAG, "cameras disabled: fix the GPIO conflict in menuconfig (Grow Box -> Cameras)");
-        return;
-    }
     if (spi_bus_setup() != ESP_OK || wifi_link_init() != ESP_OK) {
         ESP_LOGE(TAG, "cameras disabled: SPI or Wi-Fi setup failed");
         return;

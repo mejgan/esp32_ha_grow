@@ -109,6 +109,28 @@ static void test_all_grids(void)
     for (size_t i = 0; i < sizeof(k_grids) / sizeof(k_grids[0]); i++) {
         check_grid(&st, k_grids[i].cols, k_grids[i].rows);
     }
+    /* Floors with other sensor sets: no sensors at all, temperature only, light only. */
+    st = ui_sample_status();
+    st.floor[0] = (gb_ui_floor_t){.enabled = true, .light_on = true, .level_pct = 50, .auto_mode = true};
+    st.floor[1].has_humidity = st.floor[1].has_soil = false;
+    st.floor[2].has_temp = st.floor[2].has_humidity = st.floor[2].has_pressure = false;
+    st.floor[2].enabled = true;
+    for (size_t i = 0; i < sizeof(k_grids) / sizeof(k_grids[0]); i++) {
+        check_grid(&st, k_grids[i].cols, k_grids[i].rows);
+    }
+}
+
+static void test_floor_without_temp(void)
+{
+    gb_ui_status_t st = ui_sample_status();
+    static gb_ui_screen_t s;
+    st.floor[0].has_temp = st.floor[0].has_humidity = false;
+    gb_ui_render(&st, 0, 21, 8, &s);
+    CHECK(screen_contains(&s, "F1  80%      --"));
+    CHECK(!screen_contains(&s, "F1  80%  24.5"));
+    gb_ui_render(&st, 1, 21, 8, &s);
+    CHECK(screen_contains(&s, "Temp --  max 35\x7f" "C"));
+    CHECK(!screen_contains(&s, "Humidity"));
 }
 
 static void test_content(void)
@@ -191,6 +213,7 @@ int main(void)
 {
     test_all_grids();
     test_content();
+    test_floor_without_temp();
     test_font();
     TEST_MAIN_END();
 }

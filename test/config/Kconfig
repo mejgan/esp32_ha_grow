@@ -1,0 +1,23 @@
+# Root Kconfig for checking configurations without a full ESP-IDF tree (test/config/check_configs.py): the
+# project's menu plus stand-ins for the few ESP-IDF options it refers to.
+mainmenu "GrowBox configuration check"
+
+choice ZB_DEVICE_TYPE
+    prompt "Zigbee device type"
+    default ZB_ZCZR
+    config ZB_ZCZR
+        bool "Router"
+    config ZB_ZED
+        bool "End device"
+endchoice
+
+choice ESP_CONSOLE_UART
+    prompt "Console"
+    default ESP_CONSOLE_UART_DEFAULT
+    config ESP_CONSOLE_UART_DEFAULT
+        bool "UART0, default pins"
+    config ESP_CONSOLE_USB_SERIAL_JTAG
+        bool "USB Serial/JTAG"
+endchoice
+
+source "main/Kconfig.projbuild"

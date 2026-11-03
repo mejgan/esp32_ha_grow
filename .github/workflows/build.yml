@@ -24,8 +24,19 @@ jobs:
         with:
           name: display-previews
           path: previews/*.ppm
-      - name: Check the Zigbee2MQTT converter parses
-        run: node --check z2m/growbox.mjs
+      - name: Check the Zigbee2MQTT converter
+        run: |
+          node --check z2m/growbox.mjs
+          # The zigbee-herdsman-converters version Zigbee2MQTT 2.14.3 ships.
+          npm install --no-save --ignore-scripts zigbee-herdsman-converters@26.125.0
+          node test/z2m/test_converter.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check configurations (pin and I2C address clashes)
+        run: |
+          pip install esp-idf-kconfig
+          python test/config/check_configs.py
 
   case:
     name: Enclosure collision check

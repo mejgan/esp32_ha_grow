@@ -112,6 +112,9 @@ static void test_conversions(void)
     CHECK_EQ(gb_soil_pct_x100(500, 1000, 1000), 0);
 
     CHECK_NEAR(gb_temt6000_lux(1000), 200.0, 1e-3);
+    /* BH1750 datasheet example: 0x83 0x90 = 33680 counts -> 28067 lx. */
+    CHECK_NEAR(gb_bh1750_lux((const uint8_t[]){0x83, 0x90}), 28066.7, 0.1);
+    CHECK_NEAR(gb_bh1750_lux((const uint8_t[]){0xFF, 0xFF}), 54612.5, 0.1);
     CHECK_EQ(gb_lux_to_zcl(0.5f), 0);
     CHECK_EQ(gb_lux_to_zcl(1.0f), 1);
     CHECK_EQ(gb_lux_to_zcl(1000.0f), 30001);

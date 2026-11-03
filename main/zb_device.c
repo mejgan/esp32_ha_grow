@@ -26,6 +26,10 @@ static const char *TAG = "zb_device";
 #define EP_ROOM         4           /* optional room sensor: temperature, humidity (+ pressure) */
 
 #define GROWBOX_CLUSTER_ID 0xFC00
+/* Soil moisture, only on floors with a soil sensor: its own cluster, so Zigbee2MQTT sees from the endpoint's
+ * cluster list which floors have one. Attribute 0x0000 = moisture in % x100 (0xFFFF until the first reading). */
+#define GROWBOX_SOIL_CLUSTER_ID 0xFC01
+#define ATTR_SOIL_MEASURED      0x0000
 
 /* The system clock holds local wall time (the coordinator's ZCL LocalTime); anything before this is unset. */
 #define CLOCK_VALID_AFTER_UNIX 1704067200 /* 2024-01-01 */
@@ -37,7 +41,7 @@ enum {
     ATTR_AUTO_BRIGHTNESS = 0x0003,
     ATTR_MAX_TEMP = 0x0004,
     ATTR_HEAT_LOCK = 0x0005,
-    ATTR_SOIL_MOISTURE = 0x0006, /* only on floors with a soil sensor */
+    /* 0x0006 is unused: soil moisture lives in GROWBOX_SOIL_CLUSTER_ID */
     ATTR_FLOOR_ENABLED = 0x0007,
     ATTR_TIME_SYNCED = 0x0008,
     ATTR_ON_MINUTE = 0x0009,
@@ -329,6 +333,14 @@ static ezb_zcl_status_t custom_check_cb(uint16_t attr_id, uint8_t ep_id, void *v
     return ok ? EZB_ZCL_STATUS_SUCCESS : EZB_ZCL_STATUS_INVALID_VALUE;
 }
 
+/* The soil cluster is read-only for the network; only the firmware sets its value. */
+static ezb_zcl_status_t soil_check_cb(uint16_t attr_id, uint8_t ep_id, void *value)
+{
+    (void)attr_id;
+    (void)ep_id;
+    return value != NULL ? EZB_ZCL_STATUS_SUCCESS : EZB_ZCL_STATUS_INVALID_VALUE;
+}
+
 static void custom_write_cb(uint8_t ep_id, uint16_t attr_id, void *new_value, uint16_t manuf_code)
 {
     (void)manuf_code;
@@ -427,11 +439,14 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
         ESP_ERROR_CHECK(zb_ota_add_client_cluster(ep));
     }
 
-    /* Measured values start as "invalid" (ZCL spec) until the first successful reading. */
-    temp_cfg[floor] = (ezb_zcl_temperature_measurement_cluster_server_config_t){
-        .measured_value = INT16_MIN, .min_measured_value = -4000, .max_measured_value = 8500};
-    ESP_ERROR_CHECK(
-        add_cluster(ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
+    /* Measured values start as "invalid" (ZCL spec) until the first successful reading. Each measurement cluster
+     * only exists on floors whose sensors deliver it (menuconfig: Grow Box -> Floor N). */
+    if (caps & SENSOR_CAP_TEMP) {
+        temp_cfg[floor] = (ezb_zcl_temperature_measurement_cluster_server_config_t){
+            .measured_value = INT16_MIN, .min_measured_value = -4000, .max_measured_value = 8500};
+        ESP_ERROR_CHECK(add_cluster(
+            ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
+    }
     if (caps & SENSOR_CAP_HUMIDITY) {
         hum_cfg[floor] = (ezb_zcl_rel_humidity_measurement_cluster_server_config_t){
             .measured_value = 0xFFFF, .min_measured_value = 0, .max_measured_value = 10000};
@@ -472,11 +487,6 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_AUTO_BRIGHTNESS, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->auto_brightness));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_MAX_TEMP, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->max_temp));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_HEAT_LOCK, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->heat_lock));
-    if (caps & SENSOR_CAP_SOIL) {
-        s_attr_soil_init[floor] = 0xFFFF;
-        ESP_ERROR_CHECK(
-            add_custom_attr(custom, ATTR_SOIL_MOISTURE, EZB_ZCL_ATTR_TYPE_UINT16, false, &s_attr_soil_init[floor]));
-    }
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_FLOOR_ENABLED, EZB_ZCL_ATTR_TYPE_BOOL, true, &a->enabled));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_TIME_SYNCED, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->time_synced));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_ON_MINUTE, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->on_minute));
@@ -486,6 +496,16 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
         ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_TAKE_PHOTO, EZB_ZCL_ATTR_TYPE_BOOL, true, &a->take_photo));
     }
     ESP_ERROR_CHECK(add_cluster(ep, custom));
+
+    if (caps & SENSOR_CAP_SOIL) {
+        static ezb_zcl_custom_cluster_config_t soil_cfg[GB_FLOOR_COUNT];
+        soil_cfg[floor] = (ezb_zcl_custom_cluster_config_t){.cluster_id = GROWBOX_SOIL_CLUSTER_ID};
+        ezb_zcl_cluster_desc_t soil = ezb_zcl_custom_create_cluster_desc(&soil_cfg[floor], EZB_ZCL_CLUSTER_SERVER);
+        s_attr_soil_init[floor] = 0xFFFF;
+        ESP_ERROR_CHECK(
+            add_custom_attr(soil, ATTR_SOIL_MEASURED, EZB_ZCL_ATTR_TYPE_UINT16, false, &s_attr_soil_init[floor]));
+        ESP_ERROR_CHECK(add_cluster(ep, soil));
+    }
 
     s_pub[floor] = *a;
     return ep;
@@ -541,6 +561,12 @@ static void create_data_model(void)
         .write_attr_cb = custom_write_cb,
     };
     ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_zcl_custom_cluster_handlers_register(&custom_handlers)));
+    static const ezb_zcl_custom_cluster_handlers_t soil_handlers = {
+        .cluster_id = GROWBOX_SOIL_CLUSTER_ID,
+        .cluster_role = EZB_ZCL_CLUSTER_SERVER,
+        .check_value_cb = soil_check_cb,
+    };
+    ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_zcl_custom_cluster_handlers_register(&soil_handlers)));
     zb_ota_after_register(EP_MAIN);
 }
 
@@ -664,7 +690,7 @@ static void set_attr(uint8_t ep, uint16_t cluster, uint16_t attr, void *value)
 /* Caller holds the Zigbee lock. Temperature, humidity, pressure and illuminance of one endpoint. */
 static void publish_climate(uint8_t ep, uint8_t caps, const floor_readings_t *r)
 {
-    if (r->temp_valid) {
+    if ((caps & SENSOR_CAP_TEMP) && r->temp_valid) {
         int16_t v = (int16_t)lroundf(r->temp_c * 100);
         set_attr(ep, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
                  &v);
@@ -696,7 +722,7 @@ void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
     publish_climate(ep, caps, r);
     if ((caps & SENSOR_CAP_SOIL) && r->soil_valid) {
         uint16_t pct = r->soil_pct_x100;
-        set_attr(ep, GROWBOX_CLUSTER_ID, ATTR_SOIL_MOISTURE, &pct);
+        set_attr(ep, GROWBOX_SOIL_CLUSTER_ID, ATTR_SOIL_MEASURED, &pct);
     }
     esp_zigbee_lock_release();
 }

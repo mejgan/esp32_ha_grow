@@ -63,6 +63,16 @@ static void fmt_temp(char *buf, size_t n, bool valid, float t, bool with_unit)
     }
 }
 
+/* A floor without its own temperature sensor shows "--" (its cutoff uses the hottest other floor). */
+static void fmt_floor_temp(char *buf, size_t n, const gb_ui_floor_t *f, bool with_unit)
+{
+    if (f->has_temp) {
+        fmt_temp(buf, n, f->temp_valid, f->temp_c, with_unit);
+    } else {
+        snprintf(buf, n, "--");
+    }
+}
+
 static void fmt_pct(char *buf, size_t n, bool valid, float v)
 {
     if (valid) {
@@ -130,9 +140,9 @@ static void add_overview_line(block_t *b, const gb_ui_floor_t *f, unsigned num, 
     }
     char temp_l[16], temp_s[16], hum_l[16], hum_s[16];
     char t[12];
-    fmt_temp(t, sizeof(t), f->temp_valid, f->temp_c, true);
+    fmt_floor_temp(t, sizeof(t), f, true);
     snprintf(temp_l, sizeof(temp_l), "%7s", t);
-    fmt_temp(t, sizeof(t), f->temp_valid, f->temp_c, false);
+    fmt_floor_temp(t, sizeof(t), f, false);
     snprintf(temp_s, sizeof(temp_s), "%5s", t);
     if (f->has_humidity) {
         fmt_pct(t, sizeof(t), f->rh_valid, f->rh);
@@ -182,7 +192,7 @@ static void add_floor_block(block_t *b, const gb_ui_floor_t *f, unsigned num, ui
     }
 
     char temp[16], v[24];
-    fmt_temp(temp, sizeof(temp), f->temp_valid, f->temp_c, true);
+    fmt_floor_temp(temp, sizeof(temp), f, true);
     if (compact) {
         /* Few rows: pack the readings densely. */
         if (f->has_humidity) {
@@ -190,7 +200,7 @@ static void add_floor_block(block_t *b, const gb_ui_floor_t *f, unsigned num, ui
             snprintf(c1, sizeof(c1), "%s  %s", temp, v);
             snprintf(c2, sizeof(c2), "%s %s", temp, v);
             add_line(b, cols, GB_UI_STYLE_NORMAL, 2, c1, c2);
-        } else {
+        } else if (f->has_temp) {
             add_line(b, cols, GB_UI_STYLE_NORMAL, 1, temp);
         }
         char extra[48] = "";

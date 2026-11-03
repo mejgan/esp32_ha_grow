@@ -37,8 +37,8 @@ typedef struct {
     uint8_t auto_brightness_pct;
     uint8_t max_temp_c;
     bool heat_lock;
-    bool sensor_fault; /* the floor's own temperature sensor gives no reading */
-    bool has_humidity, has_soil, has_pressure, has_lux;
+    bool sensor_fault; /* a sensor of this floor gives no reading */
+    bool has_temp, has_humidity, has_soil, has_pressure, has_lux;
     bool temp_valid, rh_valid, soil_valid, pressure_valid, lux_valid;
     float temp_c, rh, soil_pct, pressure_hpa, lux;
 } gb_ui_floor_t;

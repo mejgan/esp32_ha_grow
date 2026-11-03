@@ -28,3 +28,4 @@ __pycache__/
 
 # Host test builds
 build-host/
+node_modules/

@@ -13,11 +13,11 @@ typedef enum {
     DHT_TYPE_DHT22, /* also AM2302 */
 } dht_type_t;
 
-/* One DHT sensor on its own GPIO. Each instance uses one RMT receive channel (the ESP32-C6 has two). */
+/* One DHT sensor on its own GPIO. An RMT receive channel is taken only for the duration of a read. */
 typedef struct {
     gpio_num_t pin;
     dht_type_t type;
-    rmt_channel_handle_t chan; /* set up on the first read */
+    rmt_channel_handle_t chan; /* only during a read */
     QueueHandle_t done;
     rmt_symbol_word_t symbols[64];
 } dht_t;

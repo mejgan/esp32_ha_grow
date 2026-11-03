@@ -182,6 +182,7 @@ static void fill_ui_floor(gb_ui_floor_t *u, uint8_t floor, const gb_settings_t *
         .max_temp_c = s->max_temp_c,
         .heat_lock = heat_lock,
         .sensor_fault = fault,
+        .has_temp = (caps & SENSOR_CAP_TEMP) != 0,
         .has_humidity = (caps & SENSOR_CAP_HUMIDITY) != 0,
         .has_soil = (caps & SENSOR_CAP_SOIL) != 0,
         .has_pressure = (caps & SENSOR_CAP_PRESSURE) != 0,
@@ -237,6 +238,11 @@ static void app_task(void *arg)
     bool time_requested = false;
     int64_t last_time_req_us = 0;
     bool image_confirmed = false;
+    /* Without any temperature sensor there is nothing to cut off on, and the failsafe would keep the lights off. */
+    const bool cutoff = sensors_any_temp();
+    if (!cutoff) {
+        ESP_LOGW(TAG, "no floor has a temperature sensor: over-temperature cutoff and failsafe are off");
+    }
 
     for (int f = 0; f < GB_FLOOR_COUNT; f++) {
         ctl_valid_us[f] = esp_timer_get_time();
@@ -315,7 +321,7 @@ static void app_task(void *arg)
         gb_light_output_t out[GB_FLOOR_COUNT];
         for (int f = 0; f < GB_FLOOR_COUNT; f++) {
             bool locked = false;
-            if (!s[f].enabled) {
+            if (!s[f].enabled || !cutoff) {
                 ctl_valid_us[f] = now; /* a floor that gets enabled starts with a full failsafe grace period */
             } else {
                 float ctl = 0;
