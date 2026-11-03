@@ -1,16 +1,41 @@
 #include "growbox_logic.h"
 
 #include <math.h>
+#include <string.h>
 
-bool gb_in_light_window(uint8_t hour, uint8_t on_hour, uint8_t off_hour)
+static uint8_t clamp_u8(uint8_t v, uint8_t lo, uint8_t hi)
 {
-    if (on_hour == off_hour) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void gb_settings_clamp(gb_settings_t *s)
+{
+    /* Read the bools as bytes: a corrupted blob may hold values other than 0/1. */
+    uint8_t raw;
+    memcpy(&raw, &s->enabled, 1);
+    s->enabled = raw != 0;
+    memcpy(&raw, &s->auto_mode, 1);
+    s->auto_mode = raw != 0;
+    memcpy(&raw, &s->manual_on, 1);
+    s->manual_on = raw != 0;
+    s->manual_level = clamp_u8(s->manual_level, 1, 254);
+    s->on_hour = clamp_u8(s->on_hour, 0, 23);
+    s->on_minute = clamp_u8(s->on_minute, 0, 59);
+    s->off_hour = clamp_u8(s->off_hour, 0, 23);
+    s->off_minute = clamp_u8(s->off_minute, 0, 59);
+    s->auto_brightness_pct = clamp_u8(s->auto_brightness_pct, 1, 100);
+    s->max_temp_c = clamp_u8(s->max_temp_c, 20, 50);
+}
+
+bool gb_in_light_window(uint16_t now, uint16_t on, uint16_t off)
+{
+    if (on == off) {
         return false;
     }
-    if (on_hour < off_hour) {
-        return hour >= on_hour && hour < off_hour;
+    if (on < off) {
+        return now >= on && now < off;
     }
-    return hour >= on_hour || hour < off_hour;
+    return now >= on || now < off;
 }
 
 bool gb_heat_lock_update(bool locked, bool temp_valid, float temp_c, float max_temp_c)
@@ -54,11 +79,25 @@ uint8_t gb_pct_to_level(uint8_t pct)
     return (uint8_t)(level < 1 ? 1 : level);
 }
 
-gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint8_t hour, bool heat_lock)
+uint8_t gb_level_to_pct(uint8_t level)
+{
+    if (level == 0) {
+        return 0;
+    }
+    long pct = lround(level * 100 / 254.0);
+    if (pct < 1) {
+        pct = 1;
+    } else if (pct > 100) {
+        pct = 100;
+    }
+    return (uint8_t)pct;
+}
+
+gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint16_t minute_of_day, bool heat_lock)
 {
     gb_light_output_t out;
     if (s->auto_mode) {
-        out.on = time_valid && gb_in_light_window(hour, s->on_hour, s->off_hour);
+        out.on = time_valid && gb_in_light_window(minute_of_day, gb_on_minute_of_day(s), gb_off_minute_of_day(s));
         out.level = gb_pct_to_level(s->auto_brightness_pct);
     } else {
         out.on = s->manual_on;
@@ -68,6 +107,14 @@ gb_light_output_t gb_light_decide(const gb_settings_t *s, bool time_valid, uint8
         out.on = false;
     }
     return out;
+}
+
+uint16_t gb_minute_of_day(int64_t secs)
+{
+    if (secs < 0) {
+        secs = 0;
+    }
+    return (uint16_t)((secs % 86400) / 60);
 }
 
 uint16_t gb_soil_pct_x100(int mv, int dry_mv, int wet_mv)
@@ -87,6 +134,11 @@ uint16_t gb_soil_pct_x100(int mv, int dry_mv, int wet_mv)
 float gb_temt6000_lux(int mv)
 {
     return mv * 0.2f;
+}
+
+float gb_bh1750_lux(const uint8_t raw[2])
+{
+    return (float)((raw[0] << 8) | raw[1]) / 1.2f;
 }
 
 uint16_t gb_lux_to_zcl(float lux)
@@ -155,7 +207,334 @@ bool gb_dht11_decode(const uint8_t d[5], float *temp_c, float *rh)
     return true;
 }
 
-uint8_t gb_hour_from_zcl_local(uint32_t zcl_local_secs)
+bool gb_dht22_decode(const uint8_t d[5], float *temp_c, float *rh)
 {
-    return (uint8_t)((zcl_local_secs / 3600u) % 24u);
+    if ((d[0] | d[1] | d[2] | d[3] | d[4]) == 0) {
+        return false;
+    }
+    if (((d[0] + d[1] + d[2] + d[3]) & 0xFF) != d[4]) {
+        return false;
+    }
+    *rh = ((d[0] << 8) | d[1]) * 0.1f;
+    float t = (((d[2] & 0x7F) << 8) | d[3]) * 0.1f;
+    *temp_c = (d[2] & 0x80) ? -t : t;
+    return true;
+}
+
+static uint8_t crc8(const uint8_t *data, size_t len, uint8_t init)
+{
+    uint8_t crc = init;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+uint8_t gb_crc8_sensirion(const uint8_t *data, size_t len)
+{
+    return crc8(data, len, 0xFF);
+}
+
+uint8_t gb_crc8_htu21(const uint8_t *data, size_t len)
+{
+    return crc8(data, len, 0x00);
+}
+
+static bool sht_words(const uint8_t raw[6], uint16_t *t, uint16_t *h)
+{
+    if (gb_crc8_sensirion(raw, 2) != raw[2] || gb_crc8_sensirion(raw + 3, 2) != raw[5]) {
+        return false;
+    }
+    *t = (uint16_t)((raw[0] << 8) | raw[1]);
+    *h = (uint16_t)((raw[3] << 8) | raw[4]);
+    return true;
+}
+
+static float clamp_pct(float v)
+{
+    return v < 0.0f ? 0.0f : (v > 100.0f ? 100.0f : v);
+}
+
+bool gb_sht3x_convert(const uint8_t raw[6], float *temp_c, float *rh)
+{
+    uint16_t t, h;
+    if (!sht_words(raw, &t, &h)) {
+        return false;
+    }
+    *temp_c = -45.0f + 175.0f * t / 65535.0f;
+    *rh = clamp_pct(100.0f * h / 65535.0f);
+    return true;
+}
+
+bool gb_sht4x_convert(const uint8_t raw[6], float *temp_c, float *rh)
+{
+    uint16_t t, h;
+    if (!sht_words(raw, &t, &h)) {
+        return false;
+    }
+    *temp_c = -45.0f + 175.0f * t / 65535.0f;
+    *rh = clamp_pct(-6.0f + 125.0f * h / 65535.0f);
+    return true;
+}
+
+static bool htu21_word(const uint8_t raw[3], uint16_t *v)
+{
+    if (gb_crc8_htu21(raw, 2) != raw[2]) {
+        return false;
+    }
+    *v = (uint16_t)(((raw[0] << 8) | raw[1]) & ~0x3u); /* low 2 bits are status */
+    return true;
+}
+
+bool gb_htu21_temp(const uint8_t raw[3], float *temp_c)
+{
+    uint16_t v;
+    if (!htu21_word(raw, &v)) {
+        return false;
+    }
+    *temp_c = -46.85f + 175.72f * v / 65536.0f;
+    return true;
+}
+
+bool gb_htu21_rh(const uint8_t raw[3], float *rh)
+{
+    uint16_t v;
+    if (!htu21_word(raw, &v)) {
+        return false;
+    }
+    *rh = clamp_pct(-6.0f + 125.0f * v / 65536.0f);
+    return true;
+}
+
+void gb_bme280_parse_calib(const uint8_t tp[26], const uint8_t *h, gb_bme280_calib_t *c)
+{
+#define U16(i) ((uint16_t)(tp[(i)] | (tp[(i) + 1] << 8)))
+#define S16(i) ((int16_t)U16(i))
+    memset(c, 0, sizeof(*c));
+    c->t1 = U16(0);
+    c->t2 = S16(2);
+    c->t3 = S16(4);
+    c->p1 = U16(6);
+    c->p2 = S16(8);
+    c->p3 = S16(10);
+    c->p4 = S16(12);
+    c->p5 = S16(14);
+    c->p6 = S16(16);
+    c->p7 = S16(18);
+    c->p8 = S16(20);
+    c->p9 = S16(22);
+    c->h1 = tp[25];
+#undef U16
+#undef S16
+    if (h != NULL) {
+        c->h2 = (int16_t)(h[0] | (h[1] << 8));
+        c->h3 = h[2];
+        c->h4 = (int16_t)(((int16_t)(int8_t)h[3] * 16) | (h[4] & 0x0F));
+        c->h5 = (int16_t)(((int16_t)(int8_t)h[5] * 16) | (h[4] >> 4));
+        c->h6 = (int8_t)h[6];
+    }
+}
+
+void gb_bme280_compensate(const gb_bme280_calib_t *c, int32_t adc_t, int32_t adc_p, int32_t adc_h, int32_t *temp_x100,
+                          uint32_t *pressure_q24_8, uint32_t *rh_q22_10)
+{
+    int32_t v1 = ((((adc_t >> 3) - ((int32_t)c->t1 << 1))) * ((int32_t)c->t2)) >> 11;
+    int32_t v2 = (((((adc_t >> 4) - ((int32_t)c->t1)) * ((adc_t >> 4) - ((int32_t)c->t1))) >> 12) * ((int32_t)c->t3)) >> 14;
+    int32_t t_fine = v1 + v2;
+    *temp_x100 = (t_fine * 5 + 128) >> 8;
+
+    /* Bosch reference; left shifts of signed values written as multiplications (same result, no UB). */
+    int64_t p1 = ((int64_t)t_fine) - 128000;
+    int64_t p2 = p1 * p1 * (int64_t)c->p6;
+    p2 = p2 + ((p1 * (int64_t)c->p5) * 131072);
+    p2 = p2 + (((int64_t)c->p4) * 34359738368LL);
+    p1 = ((p1 * p1 * (int64_t)c->p3) >> 8) + ((p1 * (int64_t)c->p2) * 4096);
+    p1 = ((140737488355328LL + p1) * ((int64_t)c->p1)) >> 33;
+    if (p1 == 0) {
+        *pressure_q24_8 = 0;
+    } else {
+        int64_t p = 1048576 - adc_p;
+        p = (((p * 2147483648LL) - p2) * 3125) / p1;
+        p1 = (((int64_t)c->p9) * (p >> 13) * (p >> 13)) >> 25;
+        p2 = (((int64_t)c->p8) * p) >> 19;
+        p = ((p + p1 + p2) >> 8) + (((int64_t)c->p7) * 16);
+        *pressure_q24_8 = (uint32_t)p;
+    }
+
+    int32_t h = t_fine - ((int32_t)76800);
+    h = (((((adc_h * 16384) - (((int32_t)c->h4) * 1048576) - (((int32_t)c->h5) * h)) + ((int32_t)16384)) >> 15) *
+         (((((((h * ((int32_t)c->h6)) >> 10) * (((h * ((int32_t)c->h3)) >> 11) + ((int32_t)32768))) >> 10) +
+            ((int32_t)2097152)) * ((int32_t)c->h2) + 8192) >> 14));
+    h = (h - (((((h >> 15) * (h >> 15)) >> 7) * ((int32_t)c->h1)) >> 4));
+    h = h < 0 ? 0 : h;
+    h = h > 419430400 ? 419430400 : h;
+    *rh_q22_10 = (uint32_t)(h >> 12);
+}
+
+/* Bit cell limits (us). A '0' high lasts ~26 us, a '1' ~70 us; the low before each bit ~50 us. */
+#define DHT_LOW_MIN_US   20
+#define DHT_LOW_MAX_US   120
+#define DHT_HIGH_MIN_US  5
+#define DHT_HIGH_MAX_US  120
+#define DHT_ONE_THRESHOLD_US 48
+
+bool gb_dht11_frame_from_pulses(const gb_pulse_t *p, size_t n, uint8_t frame[5])
+{
+    /* Ring of the last 40 high durations that followed a plausible low. */
+    uint16_t highs[40];
+    size_t count = 0;
+    for (size_t i = 1; i < n; i++) {
+        const gb_pulse_t *lo = &p[i - 1];
+        const gb_pulse_t *hi = &p[i];
+        if (lo->level != 0 || hi->level != 1) {
+            continue;
+        }
+        if (lo->us < DHT_LOW_MIN_US || lo->us > DHT_LOW_MAX_US || hi->us < DHT_HIGH_MIN_US ||
+            hi->us > DHT_HIGH_MAX_US) {
+            continue;
+        }
+        highs[count % 40] = hi->us;
+        count++;
+    }
+    if (count < 40) {
+        return false;
+    }
+    memset(frame, 0, 5);
+    for (size_t b = 0; b < 40; b++) {
+        uint16_t us = highs[(count - 40 + b) % 40];
+        frame[b / 8] = (uint8_t)(frame[b / 8] << 1);
+        if (us > DHT_ONE_THRESHOLD_US) {
+            frame[b / 8] |= 1;
+        }
+    }
+    return true;
+}
+
+/* ---------- Zigbee OTA file parser ---------- */
+
+enum {
+    OTA_S_HEADER,      /* collecting the first 56 header bytes */
+    OTA_S_HEADER_SKIP, /* optional header fields */
+    OTA_S_SUB_HEADER,  /* 6-byte sub-element tag + length */
+    OTA_S_SUB_DATA,
+    OTA_S_DONE,
+};
+
+static uint16_t rd16(const uint8_t *b)
+{
+    return (uint16_t)(b[0] | (b[1] << 8));
+}
+
+static uint32_t rd32(const uint8_t *b)
+{
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+void gb_ota_parser_init(gb_ota_parser_t *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->state = OTA_S_HEADER;
+}
+
+bool gb_ota_parser_done(const gb_ota_parser_t *p)
+{
+    return p->state == OTA_S_DONE;
+}
+
+/* Called whenever an element (header or sub-element) ends; decides what comes next. */
+static void ota_next_element(gb_ota_parser_t *p)
+{
+    p->fill = 0;
+    p->state = p->pos >= p->total_size ? OTA_S_DONE : OTA_S_SUB_HEADER;
+}
+
+gb_ota_err_t gb_ota_parser_feed(gb_ota_parser_t *p, const uint8_t *data, size_t len, gb_ota_sink_t sink, void *ctx)
+{
+    while (len > 0) {
+        switch (p->state) {
+        case OTA_S_HEADER: {
+            size_t n = GB_OTA_HEADER_MIN - p->fill;
+            n = n < len ? n : len;
+            memcpy(p->buf + p->fill, data, n);
+            p->fill += n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->fill < GB_OTA_HEADER_MIN) {
+                break;
+            }
+            if (rd32(p->buf) != GB_OTA_FILE_ID) {
+                return GB_OTA_ERR_MAGIC;
+            }
+            p->header_len = rd16(p->buf + 6);
+            p->manuf_code = rd16(p->buf + 10);
+            p->image_type = rd16(p->buf + 12);
+            p->file_version = rd32(p->buf + 14);
+            p->total_size = rd32(p->buf + 52);
+            if (p->header_len < GB_OTA_HEADER_MIN || p->total_size < p->header_len) {
+                return GB_OTA_ERR_HEADER;
+            }
+            p->remaining = p->header_len - GB_OTA_HEADER_MIN;
+            if (p->remaining > 0) {
+                p->state = OTA_S_HEADER_SKIP;
+            } else {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_HEADER_SKIP: {
+            size_t n = p->remaining < len ? p->remaining : len;
+            p->remaining -= n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->remaining == 0) {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_SUB_HEADER: {
+            size_t n = 6u - p->fill;
+            n = n < len ? n : len;
+            memcpy(p->buf + p->fill, data, n);
+            p->fill += n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->fill < 6) {
+                break;
+            }
+            p->tag = rd16(p->buf);
+            p->remaining = rd32(p->buf + 2);
+            if (p->pos > p->total_size || p->remaining > p->total_size - p->pos) {
+                return GB_OTA_ERR_HEADER;
+            }
+            if (p->remaining > 0) {
+                p->state = OTA_S_SUB_DATA;
+            } else {
+                ota_next_element(p);
+            }
+        } break;
+        case OTA_S_SUB_DATA: {
+            size_t n = p->remaining < len ? p->remaining : len;
+            if (p->tag == GB_OTA_TAG_UPGRADE) {
+                if (sink != NULL && sink(ctx, data, n) != 0) {
+                    return GB_OTA_ERR_SINK;
+                }
+                p->image_bytes += n;
+            }
+            p->remaining -= n;
+            p->pos += n;
+            data += n;
+            len -= n;
+            if (p->remaining == 0) {
+                ota_next_element(p);
+            }
+        } break;
+        default:
+            return GB_OTA_ERR_OVERFLOW;
+        }
+    }
+    return GB_OTA_OK;
 }

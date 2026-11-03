@@ -1,8 +1,7 @@
-# ESP-IDF build output
+# ESP-IDF build output (commit dependencies.lock: it pins the managed component versions)
 build/
 sdkconfig
 sdkconfig.old
-dependencies.lock
 
 # Managed components (downloaded by IDF component manager)
 managed_components/
@@ -26,3 +25,7 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Host test builds
+build-host/
+node_modules/

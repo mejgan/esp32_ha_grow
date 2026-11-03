@@ -1,0 +1,84 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run unit tests
+        run: |
+          cmake -S test/host -B build-host
+          cmake --build build-host
+          ctest --test-dir build-host --output-on-failure
+      - name: Render display previews
+        run: |
+          mkdir -p previews
+          build-host/ui_preview previews
+      - uses: actions/upload-artifact@v4
+        with:
+          name: display-previews
+          path: previews/*.ppm
+      - name: Check the Zigbee2MQTT converter
+        run: |
+          node --check z2m/growbox.mjs
+          # The zigbee-herdsman-converters version Zigbee2MQTT 2.14.3 ships.
+          npm install --no-save --ignore-scripts zigbee-herdsman-converters@26.125.0
+          node test/z2m/test_converter.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check configurations (pin and I2C address clashes)
+        run: |
+          pip install esp-idf-kconfig
+          python test/config/check_configs.py
+
+  case:
+    name: Enclosure collision check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build every part and check the fit
+        run: |
+          pip install manifold3d numpy
+          python case/growbox_case.py --check --out stl-check
+
+  firmware:
+    name: Firmware (${{ matrix.display }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        display: [none, ssd1306_128x64, ssd1306_128x32, sh1106, lcd_1602, lcd_2004, st7789, ili9341, camera, camera_tft]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0.3
+          target: esp32c6
+          command: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;ci/sdkconfig.${{ matrix.display }}" build
+      - name: Camera builds really have cameras and the end device role
+        if: startsWith(matrix.display, 'camera')
+        run: |
+          grep -E '^CONFIG_ZB_ZED=y' sdkconfig
+          grep -E '^CONFIG_GROWBOX_CAMERA_COUNT=[123]' sdkconfig
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.display }}
+          path: |
+            build/growbox.bin
+            build/growbox.ota
+            build/growbox_ota_index.json
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/ota_data_initial.bin
+            build/flasher_args.json

@@ -3,8 +3,11 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "app.h"
+#include "camera.h"
+#include "room_sensor.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -13,14 +16,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "zb_ota.h"
 
 static const char *TAG = "zb_device";
 
 /* Endpoint N+1 is floor N: dimmable light + that floor's sensors + the grow box cluster. */
 #define FLOOR_EP(floor) ((uint8_t)((floor) + 1))
-#define EP_MAIN         FLOOR_EP(0) /* Basic strings, Time client */
+#define EP_MAIN         FLOOR_EP(0) /* Basic strings, Time client, OTA client */
+#define EP_ROOM         4           /* optional room sensor: temperature, humidity (+ pressure) */
 
 #define GROWBOX_CLUSTER_ID 0xFC00
+/* Soil moisture, only on floors with a soil sensor: its own cluster, so Zigbee2MQTT sees from the endpoint's
+ * cluster list which floors have one. Attribute 0x0000 = moisture in % x100 (0xFFFF until the first reading). */
+#define GROWBOX_SOIL_CLUSTER_ID 0xFC01
+#define ATTR_SOIL_MEASURED      0x0000
+
+/* The system clock holds local wall time (the coordinator's ZCL LocalTime); anything before this is unset. */
+#define CLOCK_VALID_AFTER_UNIX 1704067200 /* 2024-01-01 */
 
 enum {
     ATTR_AUTO_MODE = 0x0000,
@@ -29,23 +41,40 @@ enum {
     ATTR_AUTO_BRIGHTNESS = 0x0003,
     ATTR_MAX_TEMP = 0x0004,
     ATTR_HEAT_LOCK = 0x0005,
-    ATTR_SOIL_MOISTURE = 0x0006, /* only on floors with a soil sensor */
+    /* 0x0006 is unused: soil moisture lives in GROWBOX_SOIL_CLUSTER_ID */
     ATTR_FLOOR_ENABLED = 0x0007,
     ATTR_TIME_SYNCED = 0x0008,
+    ATTR_ON_MINUTE = 0x0009,
+    ATTR_OFF_MINUTE = 0x000A,
+    ATTR_SENSOR_FAULT = 0x000B,
+    ATTR_TAKE_PHOTO = 0x000C, /* only on floors with a camera; write 1 to take a photo now */
 };
 
 /* ZCL character strings: first byte is the length. */
 static const char s_manufacturer[] = "\x0A" "GrowBoxDIY";
 static const char s_model[] = "\x0A" "GrowBox-C6";
 
+#if CONFIG_ZB_ZED
+/* End device (needed with cameras: Wi-Fi and a Zigbee router share the radio badly). The receiver stays on, so
+ * commands arrive at once; the parent drops it after 64 min without a keep-alive. */
+#define ZB_DEVICE_CONFIG()                                                                       \
+    {                                                                                            \
+        .device_type = EZB_NWK_DEVICE_TYPE_END_DEVICE,                                           \
+        .install_code_policy = false,                                                            \
+        .zed_config = {.ed_timeout = EZB_NWK_ED_TIMEOUT_64MIN, .keep_alive = 4000},              \
+    }
+#else
+#define ZB_DEVICE_CONFIG()                                                                       \
+    {                                                                                            \
+        .device_type = EZB_NWK_DEVICE_TYPE_ROUTER,                                               \
+        .install_code_policy = false,                                                            \
+        .zczr_config = {.max_children = 10},                                                     \
+    }
+#endif
+
 #define ZB_CONFIG()                                                                              \
     {                                                                                            \
-        .device_config =                                                                         \
-            {                                                                                    \
-                .device_type = EZB_NWK_DEVICE_TYPE_ROUTER,                                       \
-                .install_code_policy = false,                                                    \
-                .zczr_config = {.max_children = 10},                                             \
-            },                                                                                   \
+        .device_config = ZB_DEVICE_CONFIG(),                                                     \
         .platform_config =                                                                       \
             {                                                                                    \
                 .storage_partition_name = "nvs",                                                 \
@@ -53,19 +82,27 @@ static const char s_model[] = "\x0A" "GrowBox-C6";
             },                                                                                   \
     }
 
-/* Per-floor attribute values last written by this module; remote writes equal to these are echoes, not commands.
- * Also the initial attribute storage handed to the data model (static, outlives creation). */
+/*
+ * Per-floor values currently held by the writable/state ZCL attributes. Updated both when this module writes an
+ * attribute and when a remote write lands, so a remote write that the firmware overrides (e.g. ON while the
+ * heat lock holds the light off) is corrected on the next publish, and a write equal to the held value is an echo.
+ * Only touched with the Zigbee lock held. Also serves as the initial attribute storage handed to the data model.
+ */
 typedef struct {
     uint8_t on;
     uint8_t level;
     uint8_t enabled;
     uint8_t auto_mode;
     uint8_t on_hour;
+    uint8_t on_minute;
     uint8_t off_hour;
+    uint8_t off_minute;
     uint8_t auto_brightness;
     uint8_t max_temp;
     uint8_t heat_lock;
     uint8_t time_synced;
+    uint8_t sensor_fault;
+    uint8_t take_photo;
 } published_t;
 
 static gb_settings_t s_initial[GB_FLOOR_COUNT];
@@ -74,14 +111,8 @@ static published_t s_attr_init[GB_FLOOR_COUNT];
 static uint16_t s_attr_soil_init[GB_FLOOR_COUNT];
 static bool s_internal_write;
 static volatile bool s_zb_ready;
-static volatile bool s_joined;
 
 static uint16_t s_time_attrs[] = {EZB_ZCL_ATTR_TIME_LOCAL_TIME_ID};
-
-static portMUX_TYPE s_time_mux = portMUX_INITIALIZER_UNLOCKED;
-static bool s_time_synced;
-static uint32_t s_local_secs;
-static int64_t s_sync_us;
 
 /* ---------- one-shot retry timer (from esp-zigbee-sdk examples/utils/example_common/src/alarm_timer.c) ---------- */
 
@@ -160,7 +191,6 @@ static bool signal_handler(const ezb_app_signal_t *sig)
             } else {
                 ESP_LOGI(TAG, "Rejoined network: PAN ID 0x%04hx, channel %d, short address 0x%04hx",
                          ezb_nwk_get_panid(), ezb_nwk_get_current_channel(), ezb_nwk_get_short_address());
-                s_joined = true;
             }
         } else {
             ESP_LOGW(TAG, "%s failed with status 0x%02x, retrying", ezb_app_signal_to_string(type), status);
@@ -174,20 +204,21 @@ static bool signal_handler(const ezb_app_signal_t *sig)
             ezb_nwk_get_extended_panid(&ext);
             ESP_LOGI(TAG, "Joined network successfully: PAN ID 0x%04hx (ext 0x%llx), channel %d, short address 0x%04hx",
                      ezb_nwk_get_panid(), ext.u64, ezb_nwk_get_current_channel(), ezb_nwk_get_short_address());
-            s_joined = true;
         } else {
             ESP_LOGI(TAG, "Network steering failed (status 0x%02x), retrying", status);
             schedule_commissioning(EZB_BDB_MODE_NETWORK_STEERING);
         }
     } break;
-    case EZB_ZDO_SIGNAL_LEAVE:
-        ESP_LOGW(TAG, "Left the network, back to pairing mode");
-        s_joined = false;
-        portENTER_CRITICAL(&s_time_mux);
-        s_time_synced = false;
-        portEXIT_CRITICAL(&s_time_mux);
-        schedule_commissioning(EZB_BDB_MODE_NETWORK_STEERING);
-        break;
+    case EZB_ZDO_SIGNAL_LEAVE: {
+        const ezb_zdo_signal_leave_params_t *p = ezb_app_signal_get_params(sig);
+        if (p != NULL && p->leave_type == EZB_ZDO_LEAVE_TYPE_REJOIN) {
+            ESP_LOGW(TAG, "Left the network with rejoin; the stack rejoins on its own");
+        } else {
+            /* The clock is kept: it stays right without the network, and auto mode keeps running. */
+            ESP_LOGW(TAG, "Left the network, back to pairing mode");
+            schedule_commissioning(EZB_BDB_MODE_NETWORK_STEERING);
+        }
+    } break;
     default:
         ESP_LOGI(TAG, "Zigbee signal %s (0x%02lx)", ezb_app_signal_to_string(type), (unsigned long)type);
         break;
@@ -203,45 +234,58 @@ static void handle_remote(uint8_t ep, uint16_t cluster, uint16_t attr, const voi
         return;
     }
     uint8_t floor = ep - FLOOR_EP(0);
-    const published_t *pub = &s_pub[floor];
+    published_t *pub = &s_pub[floor];
     uint8_t v = *(const uint8_t *)val;
     app_field_t field;
-    uint8_t published;
+    uint8_t *held;
 
     if (cluster == EZB_ZCL_CLUSTER_ID_ON_OFF && attr == EZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
         v = v != 0;
         field = APP_FIELD_LIGHT_ON;
-        published = pub->on;
+        held = &pub->on;
     } else if (cluster == EZB_ZCL_CLUSTER_ID_LEVEL && attr == EZB_ZCL_ATTR_LEVEL_CURRENT_LEVEL_ID) {
         field = APP_FIELD_LIGHT_LEVEL;
-        published = pub->level;
+        held = &pub->level;
     } else if (cluster == GROWBOX_CLUSTER_ID) {
         switch (attr) {
         case ATTR_FLOOR_ENABLED:
             v = v != 0;
             field = APP_FIELD_ENABLED;
-            published = pub->enabled;
+            held = &pub->enabled;
             break;
         case ATTR_AUTO_MODE:
             v = v != 0;
             field = APP_FIELD_AUTO_MODE;
-            published = pub->auto_mode;
+            held = &pub->auto_mode;
             break;
         case ATTR_ON_HOUR:
             field = APP_FIELD_ON_HOUR;
-            published = pub->on_hour;
+            held = &pub->on_hour;
+            break;
+        case ATTR_ON_MINUTE:
+            field = APP_FIELD_ON_MINUTE;
+            held = &pub->on_minute;
             break;
         case ATTR_OFF_HOUR:
             field = APP_FIELD_OFF_HOUR;
-            published = pub->off_hour;
+            held = &pub->off_hour;
+            break;
+        case ATTR_OFF_MINUTE:
+            field = APP_FIELD_OFF_MINUTE;
+            held = &pub->off_minute;
             break;
         case ATTR_AUTO_BRIGHTNESS:
             field = APP_FIELD_AUTO_BRIGHTNESS;
-            published = pub->auto_brightness;
+            held = &pub->auto_brightness;
             break;
         case ATTR_MAX_TEMP:
             field = APP_FIELD_MAX_TEMP;
-            published = pub->max_temp;
+            held = &pub->max_temp;
+            break;
+        case ATTR_TAKE_PHOTO:
+            v = v != 0;
+            field = APP_FIELD_TAKE_PHOTO;
+            held = &pub->take_photo;
             break;
         default:
             return;
@@ -250,11 +294,51 @@ static void handle_remote(uint8_t ep, uint16_t cluster, uint16_t attr, const voi
         return;
     }
 
-    if (v == published) {
-        return;
+    if (v == *held) {
+        return; /* echo of a value the attribute already holds */
     }
+    /* The attribute now holds `v`; if the firmware ends up with a different value it is rewritten on publish. */
+    *held = v;
     ESP_LOGI(TAG, "floor %u: remote write cluster 0x%04x attr 0x%04x = %u", floor + 1, cluster, attr, v);
     app_remote_set(floor, field, v);
+}
+
+/* Rejects out-of-range writes to the grow box cluster with INVALID_VALUE instead of silently clamping them. */
+static ezb_zcl_status_t custom_check_cb(uint16_t attr_id, uint8_t ep_id, void *value)
+{
+    (void)ep_id;
+    if (value == NULL) {
+        return EZB_ZCL_STATUS_INVALID_VALUE;
+    }
+    uint8_t v = *(const uint8_t *)value;
+    bool ok = true;
+    switch (attr_id) {
+    case ATTR_ON_HOUR:
+    case ATTR_OFF_HOUR:
+        ok = v <= 23;
+        break;
+    case ATTR_ON_MINUTE:
+    case ATTR_OFF_MINUTE:
+        ok = v <= 59;
+        break;
+    case ATTR_AUTO_BRIGHTNESS:
+        ok = v >= 1 && v <= 100;
+        break;
+    case ATTR_MAX_TEMP:
+        ok = v >= 20 && v <= 50;
+        break;
+    default:
+        break;
+    }
+    return ok ? EZB_ZCL_STATUS_SUCCESS : EZB_ZCL_STATUS_INVALID_VALUE;
+}
+
+/* The soil cluster is read-only for the network; only the firmware sets its value. */
+static ezb_zcl_status_t soil_check_cb(uint16_t attr_id, uint8_t ep_id, void *value)
+{
+    (void)attr_id;
+    (void)ep_id;
+    return value != NULL ? EZB_ZCL_STATUS_SUCCESS : EZB_ZCL_STATUS_INVALID_VALUE;
 }
 
 static void custom_write_cb(uint8_t ep_id, uint16_t attr_id, void *new_value, uint16_t manuf_code)
@@ -276,11 +360,9 @@ static void handle_time_rsp(const ezb_zcl_cmd_read_attr_rsp_message_t *msg)
             ESP_LOGW(TAG, "coordinator LocalTime not set (0x%08lx)", (unsigned long)secs);
             continue;
         }
-        portENTER_CRITICAL(&s_time_mux);
-        s_local_secs = secs;
-        s_sync_us = esp_timer_get_time();
-        s_time_synced = true;
-        portEXIT_CRITICAL(&s_time_mux);
+        /* System time = local wall time as if it were UTC; it keeps running across software resets. */
+        const struct timeval tv = {.tv_sec = (time_t)secs + GB_ZCL_EPOCH_UNIX, .tv_usec = 0};
+        settimeofday(&tv, NULL);
         ESP_LOGI(TAG, "time synced: local %02lu:%02lu:%02lu", (unsigned long)(secs / 3600 % 24),
                  (unsigned long)(secs / 60 % 60), (unsigned long)(secs % 60));
     }
@@ -288,6 +370,9 @@ static void handle_time_rsp(const ezb_zcl_cmd_read_attr_rsp_message_t *msg)
 
 static void action_handler(ezb_zcl_core_action_callback_id_t callback_id, void *message)
 {
+    if (zb_ota_handle_action(callback_id, message)) {
+        return;
+    }
     switch (callback_id) {
     case EZB_ZCL_CORE_SET_ATTR_VALUE_CB_ID: {
         const ezb_zcl_set_attr_value_message_t *msg = message;
@@ -350,23 +435,33 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
             ezb_zcl_basic_cluster_desc_add_attr(basic, EZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, s_model)));
         /* Time client: lets us read LocalTime from the coordinator. */
         ESP_ERROR_CHECK(add_cluster(ep, ezb_zcl_time_create_cluster_desc(NULL, EZB_ZCL_CLUSTER_CLIENT)));
+        /* OTA client: firmware updates from Zigbee2MQTT. */
+        ESP_ERROR_CHECK(zb_ota_add_client_cluster(ep));
     }
 
-    temp_cfg[floor] = (ezb_zcl_temperature_measurement_cluster_server_config_t){0, -4000, 8500};
-    ESP_ERROR_CHECK(
-        add_cluster(ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
+    /* Measured values start as "invalid" (ZCL spec) until the first successful reading. Each measurement cluster
+     * only exists on floors whose sensors deliver it (menuconfig: Grow Box -> Floor N). */
+    if (caps & SENSOR_CAP_TEMP) {
+        temp_cfg[floor] = (ezb_zcl_temperature_measurement_cluster_server_config_t){
+            .measured_value = INT16_MIN, .min_measured_value = -4000, .max_measured_value = 8500};
+        ESP_ERROR_CHECK(add_cluster(
+            ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
+    }
     if (caps & SENSOR_CAP_HUMIDITY) {
-        hum_cfg[floor] = (ezb_zcl_rel_humidity_measurement_cluster_server_config_t){0, 0, 10000};
+        hum_cfg[floor] = (ezb_zcl_rel_humidity_measurement_cluster_server_config_t){
+            .measured_value = 0xFFFF, .min_measured_value = 0, .max_measured_value = 10000};
         ESP_ERROR_CHECK(add_cluster(
             ep, ezb_zcl_rel_humidity_measurement_create_cluster_desc(&hum_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
     }
     if (caps & SENSOR_CAP_PRESSURE) {
-        press_cfg[floor] = (ezb_zcl_pressure_measurement_cluster_server_config_t){0, 300, 1100};
+        press_cfg[floor] = (ezb_zcl_pressure_measurement_cluster_server_config_t){
+            .measured_value = INT16_MIN, .min_measured_value = 300, .max_measured_value = 1100};
         ESP_ERROR_CHECK(add_cluster(
             ep, ezb_zcl_pressure_measurement_create_cluster_desc(&press_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
     }
     if (caps & SENSOR_CAP_LUX) {
-        illum_cfg[floor] = (ezb_zcl_illuminance_measurement_cluster_server_config_t){0, 1, 40001};
+        illum_cfg[floor] = (ezb_zcl_illuminance_measurement_cluster_server_config_t){
+            .measured_value = 0xFFFF, .min_measured_value = 1, .max_measured_value = 40001};
         ESP_ERROR_CHECK(add_cluster(
             ep, ezb_zcl_illuminance_measurement_create_cluster_desc(&illum_cfg[floor], EZB_ZCL_CLUSTER_SERVER)));
     }
@@ -378,7 +473,9 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
         .enabled = init->enabled,
         .auto_mode = init->auto_mode,
         .on_hour = init->on_hour,
+        .on_minute = init->on_minute,
         .off_hour = init->off_hour,
+        .off_minute = init->off_minute,
         .auto_brightness = init->auto_brightness_pct,
         .max_temp = init->max_temp_c,
     };
@@ -390,15 +487,57 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_AUTO_BRIGHTNESS, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->auto_brightness));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_MAX_TEMP, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->max_temp));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_HEAT_LOCK, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->heat_lock));
-    if (caps & SENSOR_CAP_SOIL) {
-        ESP_ERROR_CHECK(
-            add_custom_attr(custom, ATTR_SOIL_MOISTURE, EZB_ZCL_ATTR_TYPE_UINT16, false, &s_attr_soil_init[floor]));
-    }
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_FLOOR_ENABLED, EZB_ZCL_ATTR_TYPE_BOOL, true, &a->enabled));
     ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_TIME_SYNCED, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->time_synced));
+    ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_ON_MINUTE, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->on_minute));
+    ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_OFF_MINUTE, EZB_ZCL_ATTR_TYPE_UINT8, true, &a->off_minute));
+    ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_SENSOR_FAULT, EZB_ZCL_ATTR_TYPE_BOOL, false, &a->sensor_fault));
+    if (floor < camera_count()) {
+        ESP_ERROR_CHECK(add_custom_attr(custom, ATTR_TAKE_PHOTO, EZB_ZCL_ATTR_TYPE_BOOL, true, &a->take_photo));
+    }
     ESP_ERROR_CHECK(add_cluster(ep, custom));
 
+    if (caps & SENSOR_CAP_SOIL) {
+        static ezb_zcl_custom_cluster_config_t soil_cfg[GB_FLOOR_COUNT];
+        soil_cfg[floor] = (ezb_zcl_custom_cluster_config_t){.cluster_id = GROWBOX_SOIL_CLUSTER_ID};
+        ezb_zcl_cluster_desc_t soil = ezb_zcl_custom_create_cluster_desc(&soil_cfg[floor], EZB_ZCL_CLUSTER_SERVER);
+        s_attr_soil_init[floor] = 0xFFFF;
+        ESP_ERROR_CHECK(
+            add_custom_attr(soil, ATTR_SOIL_MEASURED, EZB_ZCL_ATTR_TYPE_UINT16, false, &s_attr_soil_init[floor]));
+        ESP_ERROR_CHECK(add_cluster(ep, soil));
+    }
+
     s_pub[floor] = *a;
+    return ep;
+}
+
+/* Plain temperature sensor endpoint for the room sensor next to the controller. */
+static ezb_af_ep_desc_t create_room_endpoint(uint8_t caps)
+{
+    static ezb_zcl_temperature_measurement_cluster_server_config_t temp_cfg = {
+        .measured_value = INT16_MIN, .min_measured_value = -4000, .max_measured_value = 8500};
+    static ezb_zcl_rel_humidity_measurement_cluster_server_config_t hum_cfg = {
+        .measured_value = 0xFFFF, .min_measured_value = 0, .max_measured_value = 10000};
+    static ezb_zcl_pressure_measurement_cluster_server_config_t press_cfg = {
+        .measured_value = INT16_MIN, .min_measured_value = 300, .max_measured_value = 1100};
+    const ezb_af_ep_config_t ep_cfg = {
+        .ep_id = EP_ROOM,
+        .app_profile_id = EZB_AF_HA_PROFILE_ID,
+        .app_device_id = EZB_ZHA_TEMPERATURE_SENSOR_DEVICE_ID,
+        .app_device_version = 0,
+    };
+    ezb_af_ep_desc_t ep = ezb_af_create_endpoint_desc(&ep_cfg);
+    ESP_ERROR_CHECK(add_cluster(ep, ezb_zcl_identify_create_cluster_desc(NULL, EZB_ZCL_CLUSTER_SERVER)));
+    ESP_ERROR_CHECK(
+        add_cluster(ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    if (caps & SENSOR_CAP_HUMIDITY) {
+        ESP_ERROR_CHECK(
+            add_cluster(ep, ezb_zcl_rel_humidity_measurement_create_cluster_desc(&hum_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    }
+    if (caps & SENSOR_CAP_PRESSURE) {
+        ESP_ERROR_CHECK(
+            add_cluster(ep, ezb_zcl_pressure_measurement_create_cluster_desc(&press_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    }
     return ep;
 }
 
@@ -408,15 +547,27 @@ static void create_data_model(void)
     for (uint8_t f = 0; f < GB_FLOOR_COUNT; f++) {
         ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_add_endpoint_desc(dev, create_floor_endpoint(f))));
     }
+    uint8_t room_caps = room_sensor_caps();
+    if (room_caps != 0) {
+        ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_add_endpoint_desc(dev, create_room_endpoint(room_caps))));
+    }
     ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_desc_register(dev)));
 
     ezb_zcl_core_action_handler_register(action_handler);
     static const ezb_zcl_custom_cluster_handlers_t custom_handlers = {
         .cluster_id = GROWBOX_CLUSTER_ID,
         .cluster_role = EZB_ZCL_CLUSTER_SERVER,
+        .check_value_cb = custom_check_cb,
         .write_attr_cb = custom_write_cb,
     };
     ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_zcl_custom_cluster_handlers_register(&custom_handlers)));
+    static const ezb_zcl_custom_cluster_handlers_t soil_handlers = {
+        .cluster_id = GROWBOX_SOIL_CLUSTER_ID,
+        .cluster_role = EZB_ZCL_CLUSTER_SERVER,
+        .check_value_cb = soil_check_cb,
+    };
+    ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_zcl_custom_cluster_handlers_register(&soil_handlers)));
+    zb_ota_after_register(EP_MAIN);
 }
 
 /* ---------- stack task ---------- */
@@ -456,7 +607,29 @@ esp_err_t zb_device_start(const gb_settings_t initial[GB_FLOOR_COUNT])
 
 bool zb_device_is_joined(void)
 {
-    return s_joined;
+    if (!s_zb_ready) {
+        return false;
+    }
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    bool joined = ezb_bdb_dev_joined();
+    esp_zigbee_lock_release();
+    return joined;
+}
+
+void zb_device_factory_reset(void)
+{
+    if (!s_zb_ready) {
+        return;
+    }
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    if (ezb_bdb_dev_joined()) {
+        /* Leaves the network and clears its data; the LEAVE signal then starts steering again. */
+        ezb_bdb_reset_via_local_action();
+        esp_zigbee_lock_release();
+    } else {
+        esp_zigbee_lock_release();
+        esp_zigbee_factory_reset(); /* clears the Zigbee data and restarts */
+    }
 }
 
 void zb_device_request_time(void)
@@ -491,17 +664,14 @@ void zb_device_request_time(void)
     }
 }
 
-bool zb_device_get_local_hour(uint8_t *hour)
+bool zb_device_get_local_minute(uint16_t *minute_of_day)
 {
-    portENTER_CRITICAL(&s_time_mux);
-    bool synced = s_time_synced;
-    uint32_t secs = s_local_secs;
-    int64_t sync_us = s_sync_us;
-    portEXIT_CRITICAL(&s_time_mux);
-    if (!synced) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    if (tv.tv_sec < CLOCK_VALID_AFTER_UNIX) {
         return false;
     }
-    *hour = gb_hour_from_zcl_local(secs + (uint32_t)((esp_timer_get_time() - sync_us) / 1000000));
+    *minute_of_day = gb_minute_of_day((int64_t)tv.tv_sec);
     return true;
 }
 
@@ -517,15 +687,10 @@ static void set_attr(uint8_t ep, uint16_t cluster, uint16_t attr, void *value)
     }
 }
 
-void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
+/* Caller holds the Zigbee lock. Temperature, humidity, pressure and illuminance of one endpoint. */
+static void publish_climate(uint8_t ep, uint8_t caps, const floor_readings_t *r)
 {
-    if (!s_zb_ready || floor >= GB_FLOOR_COUNT) {
-        return;
-    }
-    uint8_t ep = FLOOR_EP(floor);
-    uint8_t caps = sensors_floor_caps(floor);
-    esp_zigbee_lock_acquire(portMAX_DELAY);
-    if (r->temp_valid) {
+    if ((caps & SENSOR_CAP_TEMP) && r->temp_valid) {
         int16_t v = (int16_t)lroundf(r->temp_c * 100);
         set_attr(ep, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
                  &v);
@@ -544,24 +709,47 @@ void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
         set_attr(ep, EZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT, EZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,
                  &lux);
     }
+}
+
+void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
+{
+    if (!s_zb_ready || floor >= GB_FLOOR_COUNT) {
+        return;
+    }
+    uint8_t ep = FLOOR_EP(floor);
+    uint8_t caps = sensors_floor_caps(floor);
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    publish_climate(ep, caps, r);
     if ((caps & SENSOR_CAP_SOIL) && r->soil_valid) {
         uint16_t pct = r->soil_pct_x100;
-        set_attr(ep, GROWBOX_CLUSTER_ID, ATTR_SOIL_MOISTURE, &pct);
+        set_attr(ep, GROWBOX_SOIL_CLUSTER_ID, ATTR_SOIL_MEASURED, &pct);
     }
     esp_zigbee_lock_release();
 }
 
-/* Caller holds the Zigbee lock. Writes `value` only if it differs from the last published one. */
-static void publish_u8(uint8_t ep, uint8_t *last, uint8_t value, uint16_t cluster, uint16_t attr)
+void zb_device_publish_room(const floor_readings_t *r)
 {
-    if (*last == value) {
+    uint8_t caps = room_sensor_caps();
+    if (!s_zb_ready || caps == 0) {
+        return;
+    }
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    publish_climate(EP_ROOM, caps, r);
+    esp_zigbee_lock_release();
+}
+
+/* Caller holds the Zigbee lock. Writes `value` only if the attribute holds something else. */
+static void publish_u8(uint8_t ep, uint8_t *held, uint8_t value, uint16_t cluster, uint16_t attr)
+{
+    if (*held == value) {
         return;
     }
     set_attr(ep, cluster, attr, &value);
-    *last = value;
+    *held = value;
 }
 
-void zb_device_publish_floor_state(uint8_t floor, const gb_settings_t *s, gb_light_output_t out, bool heat_lock)
+void zb_device_publish_floor_state(uint8_t floor, const gb_settings_t *s, gb_light_output_t out, bool heat_lock,
+                                   bool sensor_fault)
 {
     if (!s_zb_ready || floor >= GB_FLOOR_COUNT) {
         return;
@@ -574,10 +762,17 @@ void zb_device_publish_floor_state(uint8_t floor, const gb_settings_t *s, gb_lig
     publish_u8(ep, &p->enabled, s->enabled, GROWBOX_CLUSTER_ID, ATTR_FLOOR_ENABLED);
     publish_u8(ep, &p->auto_mode, s->auto_mode, GROWBOX_CLUSTER_ID, ATTR_AUTO_MODE);
     publish_u8(ep, &p->on_hour, s->on_hour, GROWBOX_CLUSTER_ID, ATTR_ON_HOUR);
+    publish_u8(ep, &p->on_minute, s->on_minute, GROWBOX_CLUSTER_ID, ATTR_ON_MINUTE);
     publish_u8(ep, &p->off_hour, s->off_hour, GROWBOX_CLUSTER_ID, ATTR_OFF_HOUR);
+    publish_u8(ep, &p->off_minute, s->off_minute, GROWBOX_CLUSTER_ID, ATTR_OFF_MINUTE);
     publish_u8(ep, &p->auto_brightness, s->auto_brightness_pct, GROWBOX_CLUSTER_ID, ATTR_AUTO_BRIGHTNESS);
     publish_u8(ep, &p->max_temp, s->max_temp_c, GROWBOX_CLUSTER_ID, ATTR_MAX_TEMP);
     publish_u8(ep, &p->heat_lock, heat_lock, GROWBOX_CLUSTER_ID, ATTR_HEAT_LOCK);
+    publish_u8(ep, &p->sensor_fault, sensor_fault, GROWBOX_CLUSTER_ID, ATTR_SENSOR_FAULT);
+    if (floor < camera_count()) {
+        /* Momentary: a remote "take photo" write is answered by going back to 0. */
+        publish_u8(ep, &p->take_photo, 0, GROWBOX_CLUSTER_ID, ATTR_TAKE_PHOTO);
+    }
     esp_zigbee_lock_release();
 }
 

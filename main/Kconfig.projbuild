@@ -1,56 +1,568 @@
 menu "Grow Box"
 
-    menu "Floor 1 pins (DHT11, capacitive soil, LED strip 1)"
-        config GROWBOX_F1_DHT11_GPIO
-            int "DHT11 DATA GPIO"
+    menu "I2C buses"
+        comment "Main bus: any two free pins. LP bus: fixed GPIO6 = SDA, GPIO7 = SCL."
+
+        config GROWBOX_I2C_SDA_GPIO
+            int "Main bus SDA GPIO"
+            range 0 23
+            default 22
+
+        config GROWBOX_I2C_SCL_GPIO
+            int "Main bus SCL GPIO"
+            range 0 23
+            default 23
+
+        config GROWBOX_I2C_MAIN_USED
+            bool
+            default y if (GROWBOX_F1_HAS_I2C && GROWBOX_F1_BUS_MAIN) || (GROWBOX_F2_HAS_I2C && GROWBOX_F2_BUS_MAIN) || (GROWBOX_F3_HAS_I2C && GROWBOX_F3_BUS_MAIN) || (GROWBOX_ROOM_I2C && GROWBOX_ROOM_I2C_BUS_MAIN) || (GROWBOX_DISPLAY_I2C && GROWBOX_DISPLAY_I2C_BUS_MAIN)
+
+        config GROWBOX_I2C_LP_USED
+            bool
+            default y if (GROWBOX_F1_HAS_I2C && GROWBOX_F1_BUS_LP) || (GROWBOX_F2_HAS_I2C && GROWBOX_F2_BUS_LP) || (GROWBOX_F3_HAS_I2C && GROWBOX_F3_BUS_LP) || (GROWBOX_ROOM_I2C && GROWBOX_ROOM_I2C_BUS_LP) || (GROWBOX_DISPLAY_I2C && GROWBOX_DISPLAY_I2C_BUS_LP)
+    endmenu
+
+    menu "Floor 1 (bottom): sensors and LED strip"
+        config GROWBOX_F1_LIGHT_PWM_GPIO
+            int "LED strip PWM GPIO (MOSFET gate)"
+            default 19
+
+        choice GROWBOX_F1_CLIMATE
+            prompt "Temperature / humidity sensor"
+            default GROWBOX_F1_CLIMATE_DHT11
+            help
+                Drives this floor's over-temperature cutoff. A floor without one (or whose sensor fails) uses the
+                hottest other floor.
+
+            config GROWBOX_F1_CLIMATE_NONE
+                bool "None"
+            config GROWBOX_F1_CLIMATE_DHT11
+                bool "DHT11 (one-wire GPIO)"
+            config GROWBOX_F1_CLIMATE_DHT22
+                bool "DHT22 / AM2302 (one-wire GPIO)"
+            config GROWBOX_F1_CLIMATE_AHT
+                bool "AHT10 / AHT20 / AHT21 (I2C 0x38)"
+            config GROWBOX_F1_CLIMATE_SHT3X
+                bool "SHT30 / SHT31 / SHT35 (I2C 0x44 or 0x45)"
+            config GROWBOX_F1_CLIMATE_SHT4X
+                bool "SHT40 / SHT41 / SHT45 (I2C 0x44)"
+            config GROWBOX_F1_CLIMATE_HTU21D
+                bool "HTU21D / SHT21 / Si7021 (I2C 0x40)"
+            config GROWBOX_F1_CLIMATE_BME280
+                bool "BME280 (I2C 0x76 or 0x77), adds pressure"
+        endchoice
+
+        config GROWBOX_F1_CLIMATE_TYPE
+            int
+            default 1 if GROWBOX_F1_CLIMATE_DHT11
+            default 2 if GROWBOX_F1_CLIMATE_DHT22
+            default 3 if GROWBOX_F1_CLIMATE_AHT
+            default 4 if GROWBOX_F1_CLIMATE_SHT3X
+            default 5 if GROWBOX_F1_CLIMATE_SHT4X
+            default 6 if GROWBOX_F1_CLIMATE_HTU21D
+            default 7 if GROWBOX_F1_CLIMATE_BME280
+            default 0
+
+        config GROWBOX_F1_CLIMATE_GPIO
+            int "DATA GPIO (10 kOhm pull-up to 3V3)" if GROWBOX_F1_CLIMATE_DHT11 || GROWBOX_F1_CLIMATE_DHT22
+            range 0 23
             default 18
 
-        config GROWBOX_F1_SOIL_CAP_GPIO
-            int "Capacitive soil sensor AOUT GPIO (ADC1: 0-6)"
+        config GROWBOX_F1_CLIMATE_ADDR
+            hex "Sensor I2C address" if GROWBOX_F1_CLIMATE_SHT3X || GROWBOX_F1_CLIMATE_BME280
+            default 0x38 if GROWBOX_F1_CLIMATE_AHT
+            default 0x44 if GROWBOX_F1_CLIMATE_SHT3X || GROWBOX_F1_CLIMATE_SHT4X
+            default 0x40 if GROWBOX_F1_CLIMATE_HTU21D
+            default 0x76 if GROWBOX_F1_CLIMATE_BME280
+            default 0x0
+            help
+                SHT3x: 0x44 (ADDR to GND) or 0x45 (ADDR to VDD). BME280: 0x76 (SDO to GND) or 0x77 (SDO to VDD).
+
+        choice GROWBOX_F1_PRESSURE
+            prompt "Pressure sensor (also a backup temperature)"
+            default GROWBOX_F1_PRESSURE_NONE
+            help
+                Adds air pressure. Its temperature stands in when the temperature / humidity sensor gives no
+                reading. A BME280 already measures pressure and needs no extra sensor.
+
+            config GROWBOX_F1_PRESSURE_NONE
+                bool "None"
+            config GROWBOX_F1_PRESSURE_BMP180
+                bool "BMP180 / BMP085 (I2C 0x77)"
+            config GROWBOX_F1_PRESSURE_BMP280
+                bool "BMP280 (I2C 0x76 or 0x77)"
+        endchoice
+
+        config GROWBOX_F1_PRESSURE_TYPE
+            int
+            default 8 if GROWBOX_F1_PRESSURE_BMP180
+            default 9 if GROWBOX_F1_PRESSURE_BMP280
+            default 0
+
+        config GROWBOX_F1_PRESSURE_ADDR
+            hex "Pressure sensor I2C address" if GROWBOX_F1_PRESSURE_BMP280
+            default 0x77 if GROWBOX_F1_PRESSURE_BMP180
+            default 0x76 if GROWBOX_F1_PRESSURE_BMP280
+            default 0x0
+
+        choice GROWBOX_F1_SOIL
+            prompt "Soil moisture sensor"
+            default GROWBOX_F1_SOIL_CAPACITIVE
+
+            config GROWBOX_F1_SOIL_NONE
+                bool "None"
+            config GROWBOX_F1_SOIL_CAPACITIVE
+                bool "Capacitive v1.2 / v2.0 (analog)"
+            config GROWBOX_F1_SOIL_RESISTIVE
+                bool "YL-69 / FC-28 resistive probe module (analog)"
+        endchoice
+
+        config GROWBOX_F1_SOIL_TYPE
+            int
+            default 1 if GROWBOX_F1_SOIL_CAPACITIVE
+            default 2 if GROWBOX_F1_SOIL_RESISTIVE
+            default 0
+
+        config GROWBOX_F1_SOIL_GPIO
+            int "Soil sensor AOUT GPIO (ADC: GPIO0-6)" if !GROWBOX_F1_SOIL_NONE
             range 0 6
             default 0
 
-        config GROWBOX_F1_LIGHT_PWM_GPIO
-            int "LED strip 1 PWM GPIO (IRF520 SIG)"
-            default 19
+        config GROWBOX_F1_SOIL_PWR_GPIO
+            int "Soil sensor VCC GPIO (-1 = VCC on 3V3)" if !GROWBOX_F1_SOIL_NONE
+            range -1 23
+            default -1
+            help
+                Powers the sensor from a GPIO only while it is read. Resistive probes then corrode much more
+                slowly. Capacitive sensors can stay on 3V3.
+
+        config GROWBOX_F1_SOIL_DRY_MV
+            int "Soil sensor reading in dry air (mV)" if !GROWBOX_F1_SOIL_NONE
+            range 0 3300
+            default 3200 if GROWBOX_F1_SOIL_RESISTIVE
+            default 2700
+            help
+                The log prints the soil sensor's mV on every read. Note it with the sensor in dry air and in
+                water and enter both here.
+
+        config GROWBOX_F1_SOIL_WET_MV
+            int "Soil sensor reading in water (mV)" if !GROWBOX_F1_SOIL_NONE
+            range 0 3300
+            default 1000 if GROWBOX_F1_SOIL_RESISTIVE
+            default 1300
+
+        choice GROWBOX_F1_LIGHT
+            prompt "Light sensor"
+            default GROWBOX_F1_LIGHT_NONE
+
+            config GROWBOX_F1_LIGHT_NONE
+                bool "None"
+            config GROWBOX_F1_LIGHT_TEMT6000
+                bool "TEMT6000 (analog; tops out at about 600 lx)"
+            config GROWBOX_F1_LIGHT_BH1750
+                bool "BH1750 / GY-30 (I2C 0x23 or 0x5C; up to 65000 lx)"
+        endchoice
+
+        config GROWBOX_F1_LIGHT_TYPE
+            int
+            default 1 if GROWBOX_F1_LIGHT_TEMT6000
+            default 2 if GROWBOX_F1_LIGHT_BH1750
+            default 0
+
+        config GROWBOX_F1_LIGHT_GPIO
+            int "TEMT6000 SIG GPIO (ADC: GPIO0-6)" if GROWBOX_F1_LIGHT_TEMT6000
+            range 0 6
+            default 4
+
+        config GROWBOX_F1_LIGHT_ADDR
+            hex "BH1750 I2C address" if GROWBOX_F1_LIGHT_BH1750
+            default 0x23
+            help
+                0x23 with ADDR to GND (or open), 0x5C with ADDR to 3V3.
+
+        config GROWBOX_F1_HAS_I2C
+            bool
+            default y if GROWBOX_F1_CLIMATE_AHT || GROWBOX_F1_CLIMATE_SHT3X || GROWBOX_F1_CLIMATE_SHT4X || GROWBOX_F1_CLIMATE_HTU21D || GROWBOX_F1_CLIMATE_BME280 || !GROWBOX_F1_PRESSURE_NONE || GROWBOX_F1_LIGHT_BH1750
+
+        choice GROWBOX_F1_BUS
+            prompt "I2C bus for this floor's sensors"
+            depends on GROWBOX_F1_HAS_I2C
+            default GROWBOX_F1_BUS_MAIN
+            help
+                Two sensors with the same address (e.g. two AHT10s) have to be on different buses.
+
+            config GROWBOX_F1_BUS_MAIN
+                bool "Main I2C bus (Grow Box -> I2C buses)"
+            config GROWBOX_F1_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_F1_BUS
+            int
+            default 1 if GROWBOX_F1_BUS_LP
+            default 0
     endmenu
 
-    menu "Floor 2 pins (AHT10 #1, YL-69 soil, LED strip 2)"
-        comment "AHT10 #1 uses the LP I2C bus, fixed to SDA=GPIO6, SCL=GPIO7"
+    menu "Floor 2: sensors and LED strip"
+        config GROWBOX_F2_LIGHT_PWM_GPIO
+            int "LED strip PWM GPIO (MOSFET gate)"
+            default 20
 
-        config GROWBOX_F2_SOIL_RES_GPIO
-            int "YL-69/FC-28 module AO GPIO (ADC1: 0-6)"
+        choice GROWBOX_F2_CLIMATE
+            prompt "Temperature / humidity sensor"
+            default GROWBOX_F2_CLIMATE_AHT
+            help
+                Drives this floor's over-temperature cutoff. A floor without one (or whose sensor fails) uses the
+                hottest other floor.
+
+            config GROWBOX_F2_CLIMATE_NONE
+                bool "None"
+            config GROWBOX_F2_CLIMATE_DHT11
+                bool "DHT11 (one-wire GPIO)"
+            config GROWBOX_F2_CLIMATE_DHT22
+                bool "DHT22 / AM2302 (one-wire GPIO)"
+            config GROWBOX_F2_CLIMATE_AHT
+                bool "AHT10 / AHT20 / AHT21 (I2C 0x38)"
+            config GROWBOX_F2_CLIMATE_SHT3X
+                bool "SHT30 / SHT31 / SHT35 (I2C 0x44 or 0x45)"
+            config GROWBOX_F2_CLIMATE_SHT4X
+                bool "SHT40 / SHT41 / SHT45 (I2C 0x44)"
+            config GROWBOX_F2_CLIMATE_HTU21D
+                bool "HTU21D / SHT21 / Si7021 (I2C 0x40)"
+            config GROWBOX_F2_CLIMATE_BME280
+                bool "BME280 (I2C 0x76 or 0x77), adds pressure"
+        endchoice
+
+        config GROWBOX_F2_CLIMATE_TYPE
+            int
+            default 1 if GROWBOX_F2_CLIMATE_DHT11
+            default 2 if GROWBOX_F2_CLIMATE_DHT22
+            default 3 if GROWBOX_F2_CLIMATE_AHT
+            default 4 if GROWBOX_F2_CLIMATE_SHT3X
+            default 5 if GROWBOX_F2_CLIMATE_SHT4X
+            default 6 if GROWBOX_F2_CLIMATE_HTU21D
+            default 7 if GROWBOX_F2_CLIMATE_BME280
+            default 0
+
+        config GROWBOX_F2_CLIMATE_GPIO
+            int "DATA GPIO (10 kOhm pull-up to 3V3)" if GROWBOX_F2_CLIMATE_DHT11 || GROWBOX_F2_CLIMATE_DHT22
+            range 0 23
+            default 11
+
+        config GROWBOX_F2_CLIMATE_ADDR
+            hex "Sensor I2C address" if GROWBOX_F2_CLIMATE_SHT3X || GROWBOX_F2_CLIMATE_BME280
+            default 0x38 if GROWBOX_F2_CLIMATE_AHT
+            default 0x44 if GROWBOX_F2_CLIMATE_SHT3X || GROWBOX_F2_CLIMATE_SHT4X
+            default 0x40 if GROWBOX_F2_CLIMATE_HTU21D
+            default 0x76 if GROWBOX_F2_CLIMATE_BME280
+            default 0x0
+            help
+                SHT3x: 0x44 (ADDR to GND) or 0x45 (ADDR to VDD). BME280: 0x76 (SDO to GND) or 0x77 (SDO to VDD).
+
+        choice GROWBOX_F2_PRESSURE
+            prompt "Pressure sensor (also a backup temperature)"
+            default GROWBOX_F2_PRESSURE_NONE
+            help
+                Adds air pressure. Its temperature stands in when the temperature / humidity sensor gives no
+                reading. A BME280 already measures pressure and needs no extra sensor.
+
+            config GROWBOX_F2_PRESSURE_NONE
+                bool "None"
+            config GROWBOX_F2_PRESSURE_BMP180
+                bool "BMP180 / BMP085 (I2C 0x77)"
+            config GROWBOX_F2_PRESSURE_BMP280
+                bool "BMP280 (I2C 0x76 or 0x77)"
+        endchoice
+
+        config GROWBOX_F2_PRESSURE_TYPE
+            int
+            default 8 if GROWBOX_F2_PRESSURE_BMP180
+            default 9 if GROWBOX_F2_PRESSURE_BMP280
+            default 0
+
+        config GROWBOX_F2_PRESSURE_ADDR
+            hex "Pressure sensor I2C address" if GROWBOX_F2_PRESSURE_BMP280
+            default 0x77 if GROWBOX_F2_PRESSURE_BMP180
+            default 0x76 if GROWBOX_F2_PRESSURE_BMP280
+            default 0x0
+
+        choice GROWBOX_F2_SOIL
+            prompt "Soil moisture sensor"
+            default GROWBOX_F2_SOIL_RESISTIVE
+
+            config GROWBOX_F2_SOIL_NONE
+                bool "None"
+            config GROWBOX_F2_SOIL_CAPACITIVE
+                bool "Capacitive v1.2 / v2.0 (analog)"
+            config GROWBOX_F2_SOIL_RESISTIVE
+                bool "YL-69 / FC-28 resistive probe module (analog)"
+        endchoice
+
+        config GROWBOX_F2_SOIL_TYPE
+            int
+            default 1 if GROWBOX_F2_SOIL_CAPACITIVE
+            default 2 if GROWBOX_F2_SOIL_RESISTIVE
+            default 0
+
+        config GROWBOX_F2_SOIL_GPIO
+            int "Soil sensor AOUT GPIO (ADC: GPIO0-6)" if !GROWBOX_F2_SOIL_NONE
             range 0 6
             default 1
 
-        config GROWBOX_F2_SOIL_RES_PWR_GPIO
-            int "YL-69/FC-28 module VCC GPIO"
+        config GROWBOX_F2_SOIL_PWR_GPIO
+            int "Soil sensor VCC GPIO (-1 = VCC on 3V3)" if !GROWBOX_F2_SOIL_NONE
+            range -1 23
             default 10
             help
-                Powered only during a read to slow down probe corrosion.
+                Powers the sensor from a GPIO only while it is read. Resistive probes then corrode much more
+                slowly. Capacitive sensors can stay on 3V3.
 
-        config GROWBOX_F2_LIGHT_PWM_GPIO
-            int "LED strip 2 PWM GPIO (IRF520 SIG)"
-            default 20
+        config GROWBOX_F2_SOIL_DRY_MV
+            int "Soil sensor reading in dry air (mV)" if !GROWBOX_F2_SOIL_NONE
+            range 0 3300
+            default 3200 if GROWBOX_F2_SOIL_RESISTIVE
+            default 2700
+            help
+                The log prints the soil sensor's mV on every read. Note it with the sensor in dry air and in
+                water and enter both here.
+
+        config GROWBOX_F2_SOIL_WET_MV
+            int "Soil sensor reading in water (mV)" if !GROWBOX_F2_SOIL_NONE
+            range 0 3300
+            default 1000 if GROWBOX_F2_SOIL_RESISTIVE
+            default 1300
+
+        choice GROWBOX_F2_LIGHT
+            prompt "Light sensor"
+            default GROWBOX_F2_LIGHT_NONE
+
+            config GROWBOX_F2_LIGHT_NONE
+                bool "None"
+            config GROWBOX_F2_LIGHT_TEMT6000
+                bool "TEMT6000 (analog; tops out at about 600 lx)"
+            config GROWBOX_F2_LIGHT_BH1750
+                bool "BH1750 / GY-30 (I2C 0x23 or 0x5C; up to 65000 lx)"
+        endchoice
+
+        config GROWBOX_F2_LIGHT_TYPE
+            int
+            default 1 if GROWBOX_F2_LIGHT_TEMT6000
+            default 2 if GROWBOX_F2_LIGHT_BH1750
+            default 0
+
+        config GROWBOX_F2_LIGHT_GPIO
+            int "TEMT6000 SIG GPIO (ADC: GPIO0-6)" if GROWBOX_F2_LIGHT_TEMT6000
+            range 0 6
+            default 5
+
+        config GROWBOX_F2_LIGHT_ADDR
+            hex "BH1750 I2C address" if GROWBOX_F2_LIGHT_BH1750
+            default 0x23
+            help
+                0x23 with ADDR to GND (or open), 0x5C with ADDR to 3V3.
+
+        config GROWBOX_F2_HAS_I2C
+            bool
+            default y if GROWBOX_F2_CLIMATE_AHT || GROWBOX_F2_CLIMATE_SHT3X || GROWBOX_F2_CLIMATE_SHT4X || GROWBOX_F2_CLIMATE_HTU21D || GROWBOX_F2_CLIMATE_BME280 || !GROWBOX_F2_PRESSURE_NONE || GROWBOX_F2_LIGHT_BH1750
+
+        choice GROWBOX_F2_BUS
+            prompt "I2C bus for this floor's sensors"
+            depends on GROWBOX_F2_HAS_I2C
+            default GROWBOX_F2_BUS_LP
+            help
+                Two sensors with the same address (e.g. two AHT10s) have to be on different buses.
+
+            config GROWBOX_F2_BUS_MAIN
+                bool "Main I2C bus (Grow Box -> I2C buses)"
+            config GROWBOX_F2_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_F2_BUS
+            int
+            default 1 if GROWBOX_F2_BUS_LP
+            default 0
     endmenu
 
-    menu "Floor 3 pins (AHT10 #2, BMP180, TEMT6000, LED strip 3)"
-        config GROWBOX_F3_I2C_SDA_GPIO
-            int "I2C SDA GPIO (AHT10 #2, BMP180)"
-            default 22
+    menu "Floor 3 (top): sensors and LED strip"
+        config GROWBOX_F3_LIGHT_PWM_GPIO
+            int "LED strip PWM GPIO (MOSFET gate)"
+            default 21
 
-        config GROWBOX_F3_I2C_SCL_GPIO
-            int "I2C SCL GPIO (AHT10 #2, BMP180)"
-            default 23
+        choice GROWBOX_F3_CLIMATE
+            prompt "Temperature / humidity sensor"
+            default GROWBOX_F3_CLIMATE_AHT
+            help
+                Drives this floor's over-temperature cutoff. A floor without one (or whose sensor fails) uses the
+                hottest other floor.
 
-        config GROWBOX_F3_LIGHT_SENSOR_GPIO
-            int "TEMT6000 SIG GPIO (ADC1: 0-6)"
+            config GROWBOX_F3_CLIMATE_NONE
+                bool "None"
+            config GROWBOX_F3_CLIMATE_DHT11
+                bool "DHT11 (one-wire GPIO)"
+            config GROWBOX_F3_CLIMATE_DHT22
+                bool "DHT22 / AM2302 (one-wire GPIO)"
+            config GROWBOX_F3_CLIMATE_AHT
+                bool "AHT10 / AHT20 / AHT21 (I2C 0x38)"
+            config GROWBOX_F3_CLIMATE_SHT3X
+                bool "SHT30 / SHT31 / SHT35 (I2C 0x44 or 0x45)"
+            config GROWBOX_F3_CLIMATE_SHT4X
+                bool "SHT40 / SHT41 / SHT45 (I2C 0x44)"
+            config GROWBOX_F3_CLIMATE_HTU21D
+                bool "HTU21D / SHT21 / Si7021 (I2C 0x40)"
+            config GROWBOX_F3_CLIMATE_BME280
+                bool "BME280 (I2C 0x76 or 0x77), adds pressure"
+        endchoice
+
+        config GROWBOX_F3_CLIMATE_TYPE
+            int
+            default 1 if GROWBOX_F3_CLIMATE_DHT11
+            default 2 if GROWBOX_F3_CLIMATE_DHT22
+            default 3 if GROWBOX_F3_CLIMATE_AHT
+            default 4 if GROWBOX_F3_CLIMATE_SHT3X
+            default 5 if GROWBOX_F3_CLIMATE_SHT4X
+            default 6 if GROWBOX_F3_CLIMATE_HTU21D
+            default 7 if GROWBOX_F3_CLIMATE_BME280
+            default 0
+
+        config GROWBOX_F3_CLIMATE_GPIO
+            int "DATA GPIO (10 kOhm pull-up to 3V3)" if GROWBOX_F3_CLIMATE_DHT11 || GROWBOX_F3_CLIMATE_DHT22
+            range 0 23
+            default 3
+
+        config GROWBOX_F3_CLIMATE_ADDR
+            hex "Sensor I2C address" if GROWBOX_F3_CLIMATE_SHT3X || GROWBOX_F3_CLIMATE_BME280
+            default 0x38 if GROWBOX_F3_CLIMATE_AHT
+            default 0x44 if GROWBOX_F3_CLIMATE_SHT3X || GROWBOX_F3_CLIMATE_SHT4X
+            default 0x40 if GROWBOX_F3_CLIMATE_HTU21D
+            default 0x76 if GROWBOX_F3_CLIMATE_BME280
+            default 0x0
+            help
+                SHT3x: 0x44 (ADDR to GND) or 0x45 (ADDR to VDD). BME280: 0x76 (SDO to GND) or 0x77 (SDO to VDD).
+
+        choice GROWBOX_F3_PRESSURE
+            prompt "Pressure sensor (also a backup temperature)"
+            default GROWBOX_F3_PRESSURE_BMP180
+            help
+                Adds air pressure. Its temperature stands in when the temperature / humidity sensor gives no
+                reading. A BME280 already measures pressure and needs no extra sensor.
+
+            config GROWBOX_F3_PRESSURE_NONE
+                bool "None"
+            config GROWBOX_F3_PRESSURE_BMP180
+                bool "BMP180 / BMP085 (I2C 0x77)"
+            config GROWBOX_F3_PRESSURE_BMP280
+                bool "BMP280 (I2C 0x76 or 0x77)"
+        endchoice
+
+        config GROWBOX_F3_PRESSURE_TYPE
+            int
+            default 8 if GROWBOX_F3_PRESSURE_BMP180
+            default 9 if GROWBOX_F3_PRESSURE_BMP280
+            default 0
+
+        config GROWBOX_F3_PRESSURE_ADDR
+            hex "Pressure sensor I2C address" if GROWBOX_F3_PRESSURE_BMP280
+            default 0x77 if GROWBOX_F3_PRESSURE_BMP180
+            default 0x76 if GROWBOX_F3_PRESSURE_BMP280
+            default 0x0
+
+        choice GROWBOX_F3_SOIL
+            prompt "Soil moisture sensor"
+            default GROWBOX_F3_SOIL_NONE
+
+            config GROWBOX_F3_SOIL_NONE
+                bool "None"
+            config GROWBOX_F3_SOIL_CAPACITIVE
+                bool "Capacitive v1.2 / v2.0 (analog)"
+            config GROWBOX_F3_SOIL_RESISTIVE
+                bool "YL-69 / FC-28 resistive probe module (analog)"
+        endchoice
+
+        config GROWBOX_F3_SOIL_TYPE
+            int
+            default 1 if GROWBOX_F3_SOIL_CAPACITIVE
+            default 2 if GROWBOX_F3_SOIL_RESISTIVE
+            default 0
+
+        config GROWBOX_F3_SOIL_GPIO
+            int "Soil sensor AOUT GPIO (ADC: GPIO0-6)" if !GROWBOX_F3_SOIL_NONE
+            range 0 6
+            default 3
+
+        config GROWBOX_F3_SOIL_PWR_GPIO
+            int "Soil sensor VCC GPIO (-1 = VCC on 3V3)" if !GROWBOX_F3_SOIL_NONE
+            range -1 23
+            default -1
+            help
+                Powers the sensor from a GPIO only while it is read. Resistive probes then corrode much more
+                slowly. Capacitive sensors can stay on 3V3.
+
+        config GROWBOX_F3_SOIL_DRY_MV
+            int "Soil sensor reading in dry air (mV)" if !GROWBOX_F3_SOIL_NONE
+            range 0 3300
+            default 3200 if GROWBOX_F3_SOIL_RESISTIVE
+            default 2700
+            help
+                The log prints the soil sensor's mV on every read. Note it with the sensor in dry air and in
+                water and enter both here.
+
+        config GROWBOX_F3_SOIL_WET_MV
+            int "Soil sensor reading in water (mV)" if !GROWBOX_F3_SOIL_NONE
+            range 0 3300
+            default 1000 if GROWBOX_F3_SOIL_RESISTIVE
+            default 1300
+
+        choice GROWBOX_F3_LIGHT
+            prompt "Light sensor"
+            default GROWBOX_F3_LIGHT_TEMT6000
+
+            config GROWBOX_F3_LIGHT_NONE
+                bool "None"
+            config GROWBOX_F3_LIGHT_TEMT6000
+                bool "TEMT6000 (analog; tops out at about 600 lx)"
+            config GROWBOX_F3_LIGHT_BH1750
+                bool "BH1750 / GY-30 (I2C 0x23 or 0x5C; up to 65000 lx)"
+        endchoice
+
+        config GROWBOX_F3_LIGHT_TYPE
+            int
+            default 1 if GROWBOX_F3_LIGHT_TEMT6000
+            default 2 if GROWBOX_F3_LIGHT_BH1750
+            default 0
+
+        config GROWBOX_F3_LIGHT_GPIO
+            int "TEMT6000 SIG GPIO (ADC: GPIO0-6)" if GROWBOX_F3_LIGHT_TEMT6000
             range 0 6
             default 2
 
-        config GROWBOX_F3_LIGHT_PWM_GPIO
-            int "LED strip 3 PWM GPIO (IRF520 SIG)"
-            default 21
+        config GROWBOX_F3_LIGHT_ADDR
+            hex "BH1750 I2C address" if GROWBOX_F3_LIGHT_BH1750
+            default 0x23
+            help
+                0x23 with ADDR to GND (or open), 0x5C with ADDR to 3V3.
+
+        config GROWBOX_F3_HAS_I2C
+            bool
+            default y if GROWBOX_F3_CLIMATE_AHT || GROWBOX_F3_CLIMATE_SHT3X || GROWBOX_F3_CLIMATE_SHT4X || GROWBOX_F3_CLIMATE_HTU21D || GROWBOX_F3_CLIMATE_BME280 || !GROWBOX_F3_PRESSURE_NONE || GROWBOX_F3_LIGHT_BH1750
+
+        choice GROWBOX_F3_BUS
+            prompt "I2C bus for this floor's sensors"
+            depends on GROWBOX_F3_HAS_I2C
+            default GROWBOX_F3_BUS_MAIN
+            help
+                Two sensors with the same address (e.g. two AHT10s) have to be on different buses.
+
+            config GROWBOX_F3_BUS_MAIN
+                bool "Main I2C bus (Grow Box -> I2C buses)"
+            config GROWBOX_F3_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_F3_BUS
+            int
+            default 1 if GROWBOX_F3_BUS_LP
+            default 0
     endmenu
 
     config GROWBOX_SENSOR_PERIOD_S
@@ -62,32 +574,6 @@ menu "Grow Box"
         int "LED PWM frequency (Hz)"
         range 100 20000
         default 1000
-
-    menu "Soil sensor calibration"
-        config GROWBOX_SOIL_CAP_DRY_MV
-            int "Capacitive sensor reading in dry air (mV)"
-            default 2700
-            help
-                Read the logged mV in dry air / in water and set these.
-
-        config GROWBOX_SOIL_CAP_WET_MV
-            int "Capacitive sensor reading in water (mV)"
-            default 1300
-            help
-                Read the logged mV in dry air / in water and set these.
-
-        config GROWBOX_SOIL_RES_DRY_MV
-            int "YL-69 reading in dry air (mV)"
-            default 3200
-            help
-                Read the logged mV in dry air / in water and set these.
-
-        config GROWBOX_SOIL_RES_WET_MV
-            int "YL-69 reading in water (mV)"
-            default 1000
-            help
-                Read the logged mV in dry air / in water and set these.
-    endmenu
 
     menu "Default settings (first boot, every floor)"
         config GROWBOX_DEFAULT_ON_HOUR
@@ -109,6 +595,406 @@ menu "Grow Box"
             int "Over-temperature cutoff (C)"
             range 20 50
             default 35
+    endmenu
+
+    config GROWBOX_TEMP_FAILSAFE_MIN
+        int "Light off after this many minutes without any temperature reading (0 = never)"
+        range 0 1440
+        default 10
+        help
+            If no temperature sensor gives a reading for this long, the over-temperature cutoff of every enabled
+            floor engages (light off) until a reading is back. A floor without its own reading uses the hottest
+            other floor first, so this only happens when all temperature sensors fail.
+
+    menu "Cameras (photos over Wi-Fi to a PC)"
+        comment "Cameras need Zigbee end device mode: Component config -> Zigbee -> Zigbee Device Type -> End Device"
+            depends on !ZB_ZED
+
+        config GROWBOX_CAMERA_COUNT
+            int "Number of Arducam Mega SPI cameras (camera N looks at floor N)"
+            depends on ZB_ZED
+            range 0 3
+            default 0
+            help
+                Each camera takes a photo every GROWBOX_PHOTO_INTERVAL_MIN minutes while its floor's light is on and
+                uploads it over Wi-Fi to the photo server (tools/photo_server.py). Wi-Fi is switched on only for
+                the upload. Wi-Fi and a Zigbee router share the radio badly, so cameras need the end device role.
+
+        config GROWBOX_WIFI_SSID
+            string "Wi-Fi network name"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_WIFI_PASSWORD
+            string "Wi-Fi password"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_PHOTO_URL
+            string "Upload URL"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default "http://192.168.1.10:8088/upload"
+            help
+                http:// for a PC on the home network; https:// (with a certificate from a public CA) for a server
+                on the internet.
+
+        config GROWBOX_PHOTO_TOKEN
+            string "Upload token (must match the server's --token)"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default ""
+
+        config GROWBOX_PHOTO_INTERVAL_MIN
+            int "Minutes between photos (only while the floor's light is on)"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            range 1 1440
+            default 30
+
+        choice GROWBOX_PHOTO_RESOLUTION
+            prompt "Photo resolution"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default GROWBOX_PHOTO_UXGA
+
+            config GROWBOX_PHOTO_HD
+                bool "1280x720"
+            config GROWBOX_PHOTO_UXGA
+                bool "1600x1200"
+            config GROWBOX_PHOTO_FHD
+                bool "1920x1080"
+            config GROWBOX_PHOTO_QXGA
+                bool "2048x1536 (3 MP / 5 MP cameras)"
+        endchoice
+
+        config GROWBOX_CAM_SPI_HZ
+            int "Camera SPI clock (Hz); lower it for long camera cables"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            range 500000 8000000
+            default 4000000
+
+        config GROWBOX_CAM_SPI_SCLK_GPIO
+            int "SPI SCLK GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0 && !GROWBOX_DISPLAY_TFT
+            default 4
+            help
+                With a TFT display the cameras share its SCLK/MOSI pins.
+
+        config GROWBOX_CAM_SPI_MOSI_GPIO
+            int "SPI MOSI GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0 && !GROWBOX_DISPLAY_TFT
+            default 5
+
+        config GROWBOX_CAM_SPI_MISO_GPIO
+            int "SPI MISO GPIO"
+            depends on GROWBOX_CAMERA_COUNT > 0
+            default 16 if GROWBOX_DISPLAY_TFT
+            default 3
+
+        config GROWBOX_CAM1_CS_GPIO
+            int "Camera 1 (floor 1) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 1
+            default 17 if GROWBOX_DISPLAY_TFT
+            default 11
+
+        config GROWBOX_CAM2_CS_GPIO
+            int "Camera 2 (floor 2) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 2
+            default 8 if GROWBOX_DISPLAY_TFT
+            default 16
+
+        config GROWBOX_CAM3_CS_GPIO
+            int "Camera 3 (floor 3) CS GPIO"
+            depends on GROWBOX_CAMERA_COUNT >= 3
+            default 17
+            help
+                GPIO16/17 are the UART0 console pins: when a camera uses them, set the console to USB
+                (Component config -> ESP System Settings -> Channel for console output -> USB Serial/JTAG).
+    endmenu
+
+    menu "Room sensor (next to the controller, outside the grow box)"
+        choice GROWBOX_ROOM
+            prompt "Room temperature / humidity sensor"
+            default GROWBOX_ROOM_NONE
+            help
+                Shown in Zigbee2MQTT as temperature_room / humidity_room (endpoint 4), like a plain Zigbee
+                climate sensor, and on the display. Not used for the over-temperature cutoff.
+
+            config GROWBOX_ROOM_NONE
+                bool "None"
+            config GROWBOX_ROOM_DHT22
+                bool "DHT22 / AM2302 (one-wire GPIO)"
+            config GROWBOX_ROOM_DHT11
+                bool "DHT11 (one-wire GPIO)"
+            config GROWBOX_ROOM_AHT
+                bool "AHT10 / AHT20 / AHT21 (I2C 0x38)"
+            config GROWBOX_ROOM_SHT3X
+                bool "SHT30 / SHT31 / SHT35 (I2C 0x44 or 0x45)"
+            config GROWBOX_ROOM_SHT4X
+                bool "SHT40 / SHT41 / SHT45 (I2C 0x44)"
+            config GROWBOX_ROOM_HTU21D
+                bool "HTU21D / SHT21 / Si7021 (I2C 0x40)"
+            config GROWBOX_ROOM_BME280
+                bool "BME280 (I2C 0x76 or 0x77), adds pressure; a BMP280 gives temperature + pressure only"
+        endchoice
+
+        config GROWBOX_ROOM_TYPE
+            int
+            default 1 if GROWBOX_ROOM_DHT11
+            default 2 if GROWBOX_ROOM_DHT22
+            default 3 if GROWBOX_ROOM_AHT
+            default 4 if GROWBOX_ROOM_SHT3X
+            default 5 if GROWBOX_ROOM_SHT4X
+            default 6 if GROWBOX_ROOM_HTU21D
+            default 7 if GROWBOX_ROOM_BME280
+            default 0
+
+        config GROWBOX_ROOM_DHT
+            bool
+            default y if GROWBOX_ROOM_DHT22 || GROWBOX_ROOM_DHT11
+
+        config GROWBOX_ROOM_I2C
+            bool
+            default y if GROWBOX_ROOM_AHT || GROWBOX_ROOM_SHT3X || GROWBOX_ROOM_SHT4X || GROWBOX_ROOM_HTU21D || GROWBOX_ROOM_BME280
+
+        config GROWBOX_ROOM_GPIO
+            int "Data GPIO (10 kOhm pull-up to 3V3)" if GROWBOX_ROOM_DHT
+            range 0 23
+            default 15
+
+        choice GROWBOX_ROOM_I2C_BUS
+            prompt "I2C bus"
+            depends on GROWBOX_ROOM_I2C
+            default GROWBOX_ROOM_I2C_BUS_MAIN
+
+            config GROWBOX_ROOM_I2C_BUS_MAIN
+                bool "Main I2C bus (Grow Box -> I2C buses)"
+            config GROWBOX_ROOM_I2C_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_ROOM_BUS
+            int
+            default 1 if GROWBOX_ROOM_I2C_BUS_LP
+            default 0
+
+        config GROWBOX_ROOM_I2C_ADDR
+            hex "I2C address" if GROWBOX_ROOM_SHT3X || GROWBOX_ROOM_BME280
+            default 0x38 if GROWBOX_ROOM_AHT
+            default 0x44 if GROWBOX_ROOM_SHT3X || GROWBOX_ROOM_SHT4X
+            default 0x40 if GROWBOX_ROOM_HTU21D
+            default 0x76 if GROWBOX_ROOM_BME280
+            default 0x0
+            help
+                SHT3x: 0x44 (ADDR to GND) or 0x45 (ADDR to VDD). BME280: 0x76 (SDO to GND) or 0x77 (SDO to VDD).
+                The build stops if another sensor on the same bus already has this address.
+    endmenu
+
+    menu "Display"
+        choice GROWBOX_DISPLAY
+            prompt "Display type"
+            default GROWBOX_DISPLAY_NONE
+
+            config GROWBOX_DISPLAY_NONE
+                bool "None"
+            config GROWBOX_DISPLAY_SSD1306_128X64
+                bool "SSD1306 OLED 0.96\" 128x64 (I2C)"
+            config GROWBOX_DISPLAY_SSD1306_128X32
+                bool "SSD1306 OLED 0.91\" 128x32 (I2C)"
+            config GROWBOX_DISPLAY_SH1106_128X64
+                bool "SH1106 OLED 1.3\" 128x64 (I2C)"
+            config GROWBOX_DISPLAY_HD44780_1602
+                bool "HD44780 16x2 character LCD with PCF8574 I2C backpack"
+            config GROWBOX_DISPLAY_HD44780_2004
+                bool "HD44780 20x4 character LCD with PCF8574 I2C backpack"
+            config GROWBOX_DISPLAY_ST7789
+                bool "ST7789 color TFT (SPI)"
+            config GROWBOX_DISPLAY_ILI9341
+                bool "ILI9341 color TFT (SPI)"
+        endchoice
+
+        config GROWBOX_DISPLAY_OLED
+            bool
+            default y if GROWBOX_DISPLAY_SSD1306_128X64 || GROWBOX_DISPLAY_SSD1306_128X32 || GROWBOX_DISPLAY_SH1106_128X64
+
+        config GROWBOX_DISPLAY_LCD
+            bool
+            default y if GROWBOX_DISPLAY_HD44780_1602 || GROWBOX_DISPLAY_HD44780_2004
+
+        config GROWBOX_DISPLAY_TFT
+            bool
+            default y if GROWBOX_DISPLAY_ST7789 || GROWBOX_DISPLAY_ILI9341
+
+        config GROWBOX_DISPLAY_I2C
+            bool
+            default y if GROWBOX_DISPLAY_OLED || GROWBOX_DISPLAY_LCD
+
+        choice GROWBOX_DISPLAY_I2C_BUS
+            prompt "I2C bus"
+            depends on GROWBOX_DISPLAY_I2C
+            default GROWBOX_DISPLAY_I2C_BUS_MAIN
+            help
+                The display shares a sensor I2C bus, so it needs no extra pins.
+
+            config GROWBOX_DISPLAY_I2C_BUS_MAIN
+                bool "Main I2C bus (Grow Box -> I2C buses)"
+            config GROWBOX_DISPLAY_I2C_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_DISPLAY_I2C_ADDR
+            hex "I2C address (0 = auto-detect)"
+            depends on GROWBOX_DISPLAY_I2C
+            range 0x0 0x7f
+            default 0x0
+            help
+                Auto-detect tries 0x3C/0x3D for OLEDs and 0x27/0x3F (and the rest of 0x20-0x27, 0x38-0x3F)
+                for PCF8574 LCD backpacks.
+
+        config GROWBOX_DISPLAY_I2C_HZ
+            int "I2C clock (Hz)"
+            depends on GROWBOX_DISPLAY_I2C
+            range 10000 1000000
+            default 400000 if GROWBOX_DISPLAY_OLED
+            default 100000
+
+        config GROWBOX_DISPLAY_OLED_FLIP
+            bool "Rotate OLED 180 degrees"
+            depends on GROWBOX_DISPLAY_OLED
+            default n
+
+        config GROWBOX_DISPLAY_OLED_CONTRAST
+            int "OLED contrast"
+            depends on GROWBOX_DISPLAY_OLED
+            range 0 255
+            default 127
+
+        config GROWBOX_DISPLAY_SPI_SCLK_GPIO
+            int "SPI SCLK (SCL/SCK) GPIO"
+            depends on GROWBOX_DISPLAY_TFT
+            default 4
+
+        config GROWBOX_DISPLAY_SPI_MOSI_GPIO
+            int "SPI MOSI (SDA/DIN) GPIO"
+            depends on GROWBOX_DISPLAY_TFT
+            default 5
+
+        config GROWBOX_DISPLAY_SPI_CS_GPIO
+            int "CS GPIO (-1 if the module has no CS pin)"
+            depends on GROWBOX_DISPLAY_TFT
+            default 11
+
+        config GROWBOX_DISPLAY_SPI_DC_GPIO
+            int "DC (RS/A0) GPIO"
+            depends on GROWBOX_DISPLAY_TFT
+            default 3
+
+        config GROWBOX_DISPLAY_SPI_RST_GPIO
+            int "RST GPIO (-1 = tie RST to 3V3)"
+            depends on GROWBOX_DISPLAY_TFT
+            default -1
+
+        config GROWBOX_DISPLAY_BL_GPIO
+            int "Backlight GPIO (-1 = backlight wired to 3V3)"
+            depends on GROWBOX_DISPLAY_TFT
+            default -1
+
+        config GROWBOX_DISPLAY_SPI_MODE
+            int "SPI mode (3 for ST7789 modules without CS)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 0 3
+            default 0
+
+        config GROWBOX_DISPLAY_SPI_HZ
+            int "SPI clock (Hz)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 1000000 80000000
+            default 40000000
+
+        config GROWBOX_DISPLAY_WIDTH
+            int "Panel width in pixels (portrait)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 64 480
+            default 240
+
+        config GROWBOX_DISPLAY_HEIGHT
+            int "Panel height in pixels (portrait)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 64 480
+            default 320
+
+        config GROWBOX_DISPLAY_ROTATION
+            int "Rotation (0-3, quarter turns; 1 and 3 = landscape)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 0 3
+            default 0
+
+        config GROWBOX_DISPLAY_X_OFFSET
+            int "Column offset after rotation (e.g. 52 for 135x240 ST7789)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 0 240
+            default 0
+
+        config GROWBOX_DISPLAY_Y_OFFSET
+            int "Row offset after rotation (e.g. 80 for 240x240 ST7789 rotated 180)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 0 240
+            default 0
+
+        config GROWBOX_DISPLAY_INVERT
+            bool "Invert colors (most ST7789 modules need this)"
+            depends on GROWBOX_DISPLAY_TFT
+            default y if GROWBOX_DISPLAY_ST7789
+            default n
+
+        config GROWBOX_DISPLAY_BGR
+            bool "BGR color order (most ILI9341 modules need this)"
+            depends on GROWBOX_DISPLAY_TFT
+            default y if GROWBOX_DISPLAY_ILI9341
+            default n
+
+        config GROWBOX_DISPLAY_FONT_SCALE
+            int "Font scale (1 = 6x8 px characters)"
+            depends on GROWBOX_DISPLAY_TFT
+            range 1 4
+            default 2
+
+        config GROWBOX_DISPLAY_PAGE_S
+            int "Seconds per page"
+            depends on !GROWBOX_DISPLAY_NONE
+            range 1 120
+            default 5
+
+        config GROWBOX_DISPLAY_TIMEOUT_S
+            int "Turn the display off after this many seconds without a button press (0 = always on)"
+            depends on !GROWBOX_DISPLAY_NONE
+            range 0 86400
+            default 0
+    endmenu
+
+    menu "Button"
+        config GROWBOX_BUTTON_GPIO
+            int "Button GPIO, active low (-1 = none)"
+            range -1 30
+            default 9
+            help
+                GPIO9 is the BOOT button of ESP32-C6 boards. Short press: next display page (or wake the
+                display). Hold: Zigbee factory reset (leave the network and pair again).
+
+        config GROWBOX_BUTTON_RESET_S
+            int "Hold time for the Zigbee factory reset (s)"
+            depends on GROWBOX_BUTTON_GPIO >= 0
+            range 3 60
+            default 10
+    endmenu
+
+    menu "Zigbee OTA"
+        config GROWBOX_OTA_MANUF_CODE
+            hex "Manufacturer code in OTA images"
+            default 0x131B
+            help
+                Must match the OTA file (tools/make_ota_image.py uses the same default). 0x131B is Espressif's.
+
+        config GROWBOX_OTA_IMAGE_TYPE
+            hex "Image type in OTA images"
+            default 0x4742
     endmenu
 
     config GROWBOX_ZB_CHANNEL_MASK
