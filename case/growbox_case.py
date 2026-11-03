@@ -6,7 +6,7 @@
     python case/growbox_case.py --check         # also check that nothing inside collides
 
 Parts:
-    base.stl            box with perfboard standoffs, cable holes, USB-C, DC jack, vents, keyholes
+    base.stl            box with perfboard standoffs, cable holes, panel USB-C, DC jack, vents, keyholes
     lid_<display>.stl   lid with the window and mounts for one display type (see DISPLAYS)
 
 Inside sits a standard 7 x 9 cm perfboard carrying the ESP32-C6 DevKit (USB end toward the left wall), the
@@ -62,8 +62,22 @@ PB_PARTS_H = 17.0               # tallest part on the board (DevKit on female he
 # ESP32-C6-DevKitC-1 on the perfboard: top-left, USB-C end at the left board edge.
 DEVKIT_W, DEVKIT_D = 54.0, 25.5
 DEVKIT_Y_FROM_TOP = 2.0
-USB_SLOT_W, USB_SLOT_H = 28.0, 12.0   # both USB-C ports of the DevKit
-USB_SLOT_Z = 17.0                     # slot center above the floor (female headers ~19, soldered ~13)
+
+# USB-C for flashing and logs:
+#   "panel"  flush USB-C socket in the right wall: a small USB-C breakout board (16-pin type, with the 5.1k CC
+#            resistors) slides into a cradle behind the wall and is wired to the DevKit's native USB:
+#            D+ -> GPIO13, D- -> GPIO12, GND -> GND (VBUS -> Schottky diode -> 5V, optional).
+#   "open"   slot in the left wall to plug straight into the DevKit's own USB-C ports.
+USB_PORT = "panel"
+USBC_Y, USBC_Z = 45.0, 16.0          # socket center on the right wall (inside coordinates)
+USBC_CUT = (9.6, 4.0)                # through the wall: receptacle shell 8.94 x 3.26 plus clearance
+USBC_PLUG_RECESS = (14.0, 8.5)       # outside pocket for the cable plug's overmold
+USBC_WALL_LEFT = 1.0                 # wall thickness left at the socket, so the plug goes in all the way
+USBC_BOARD = (15.0, 13.0, 1.6)       # breakout PCB: width along the wall, depth, thickness
+USBC_SHELL_ABOVE_PCB = 1.63          # receptacle center above the PCB top (top-mounted receptacle)
+USBC_SHELL_OVERHANG = 0.6            # receptacle front past the PCB edge
+USB_SLOT_W, USB_SLOT_H = 28.0, 12.0  # "open": both USB-C ports of the DevKit
+USB_SLOT_Z = 17.0                    # "open": slot center above the floor (female headers ~19, soldered ~13)
 
 # Cable holes in the bottom wall: PG7 gland (12.5 mm) or GX12 aviation connector (12 mm).
 # Column per floor: lower = LED strip, upper = sensors.
@@ -255,6 +269,38 @@ def devkit_rect():
     return (PB_X, y1 - DEVKIT_D, PB_X + DEVKIT_W, y1)
 
 
+def right_wall_text(text, y_center, z0, pixel=LABEL_PIXEL):
+    """Text engraved into the right wall's outer face, reading from the outside (u -> +Y, v -> +Z)."""
+    t = text_pixels(text, pixel, LABEL_DEPTH + 0.01)
+    t = t.transform([[0, 0, -1, 0], [1, 0, 0, 0], [0, 1, 0, 0]])
+    return t.translate([OX + INNER_W + WALL + 0.01, y_center - text_width(text, pixel) / 2 + OY, z0 + OZ])
+
+
+def usbc_pcb_z():
+    """Top and bottom of the breakout PCB (inside coordinates)."""
+    top = USBC_Z - USBC_SHELL_ABOVE_PCB
+    return top, top - USBC_BOARD[2]
+
+
+def usbc_cradle():
+    """Rails the breakout PCB rests on, side guides and lips it slides under (inside coordinates)."""
+    w, length, _ = USBC_BOARD
+    top, bottom = usbc_pcb_z()
+    x0, x1 = INNER_W - length, INNER_W
+    parts = []
+    for sy in (-1, 1):
+        edge = USBC_Y + sy * (w / 2 + FIT)          # PCB edge plus clearance
+        # Rail under the PCB edge (2 mm under the board) and the side guide, from the floor.
+        ya, yb = sorted((edge - sy * 2.0, edge + sy * 1.8))
+        parts.append(ibox(x0, ya, -0.01, x1 + 0.01, yb, bottom))
+        ya, yb = sorted((edge, edge + sy * 1.8))
+        parts.append(ibox(x0, ya, bottom - 0.01, x1 + 0.01, yb, top + 0.4 + 1.2))
+        # Lip over the PCB edge (0.6 mm), 0.4 mm above the PCB top.
+        ya, yb = sorted((edge, edge - sy * 0.9))
+        parts.append(ibox(x0, ya, top + 0.4, x1 + 0.01, yb, top + 0.4 + 1.2))
+    return union(parts)
+
+
 def make_base():
     shell = rounded_rect(OUT_W, OUT_D, CORNER_R).extrude(BASE_H)
     cavity = rounded_rect(INNER_W, INNER_D, max(CORNER_R - WALL, 0.5)).extrude(INNER_H + 1).translate([OX, OY, OZ])
@@ -267,6 +313,8 @@ def make_base():
     # Perfboard standoffs.
     for x, y in pb_holes():
         adds.append(cyl_z(x + OX, y + OY, OZ - 0.01, PB_STANDOFF_H + 0.01, PB_STANDOFF_D))
+    if USB_PORT == "panel":
+        adds.append(usbc_cradle())
     body = union([body] + adds) ^ shell  # keep everything inside the outer shell
 
     cuts = []
@@ -294,17 +342,29 @@ def make_base():
     t = text_pixels(lbl, LABEL_PIXEL * 0.8, LABEL_DEPTH + 0.01).transform([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]])
     cuts.append(t.translate([CABLE_X[0] - 26 + OX, -0.01, CABLE_Z[1] - 2.0 + OZ]))
 
-    # Left wall (X = 0): USB-C slot at the DevKit end, low vents.
-    x0, y0, x1, y1 = devkit_rect()
-    yc = (y0 + y1) / 2
-    usb = rounded_rect(USB_SLOT_W, USB_SLOT_H, 2.0).extrude(WALL + 2)
-    usb = usb.transform([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0]])  # (y, z, x)
-    cuts.append(usb.translate([-1, yc - USB_SLOT_W / 2 + OY, USB_SLOT_Z - USB_SLOT_H / 2 + OZ]))
+    # Left wall (X = 0): optional open USB-C slot at the DevKit end, low vents.
+    if USB_PORT == "open":
+        x0, y0, x1, y1 = devkit_rect()
+        yc = (y0 + y1) / 2
+        usb = rounded_rect(USB_SLOT_W, USB_SLOT_H, 2.0).extrude(WALL + 2)
+        usb = usb.transform([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0]])  # (y, z, x)
+        cuts.append(usb.translate([-1, yc - USB_SLOT_W / 2 + OY, USB_SLOT_Z - USB_SLOT_H / 2 + OZ]))
     for i in range(6):
         cuts.append(ibox(-WALL - 1, 14 + i * 5.0, 3, 1, 16 + i * 5.0, 21))
 
-    # Right wall (X = W): DC jack, high vents.
+    # Right wall (X = W): DC jack, panel USB-C, labels, high vents.
     cuts.append(teardrop_x(DC_JACK_Y + OY, DC_JACK_Z + OZ, DC_JACK_D, WALL + 2, OX + INNER_W - 1))
+    cuts.append(right_wall_text("12V", DC_JACK_Y, DC_JACK_Z + DC_JACK_D / 2 * math.sqrt(2) + 1.2))
+    if USB_PORT == "panel":
+        def yz_slot(w, h, r, x0, length):
+            m = rounded_rect(w, h, r).extrude(length)
+            m = m.transform([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0]])  # (y, z, x)
+            return m.translate([x0, USBC_Y - w / 2 + OY, USBC_Z - h / 2 + OZ])
+        # Through-cut for the receptacle, and the plug pocket on the outside.
+        cuts.append(yz_slot(USBC_CUT[0], USBC_CUT[1], 1.6, OX + INNER_W - 1, WALL + 2))
+        pocket = WALL - USBC_WALL_LEFT
+        cuts.append(yz_slot(USBC_PLUG_RECESS[0], USBC_PLUG_RECESS[1], 3.0, OX + INNER_W + WALL - pocket, pocket + 1))
+        cuts.append(right_wall_text("USB", USBC_Y, USBC_Z + USBC_PLUG_RECESS[1] / 2 + 1.2))
     for i in range(8):
         cuts.append(ibox(INNER_W - 1, 30 + i * 5.0, 28, INNER_W + WALL + 1, 32 + i * 5.0, 46))
 
@@ -448,6 +508,22 @@ def inner_parts(d: Display):
         [OX + INNER_W, DC_JACK_Y + OY, DC_JACK_Z + OZ])
     dpt, bd = BUTTON_BODY
     parts["button"] = cyl_z(BUTTON_X + OX, BUTTON_Y + OY, LID_Z - dpt, dpt, bd)
+    if USB_PORT == "panel":
+        w, length, _ = USBC_BOARD
+        top, bottom = usbc_pcb_z()
+        parts["usb board"] = ibox(INNER_W - length, USBC_Y - w / 2, bottom, INNER_W, USBC_Y + w / 2, top)
+        def stadium_x(w, h, x0, x1):
+            """Rounded-end USB-C outline (w along Y, h along Z) extruded from x0 to x1 (inside coordinates)."""
+            m = rounded_rect(w, h, h / 2 - 0.01).extrude(x1 - x0)
+            m = m.transform([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0]])
+            return m.translate([x0 + OX, USBC_Y - w / 2 + OY, USBC_Z - h / 2 + OZ])
+
+        # Receptacle shell 8.94 x 3.26 x 7.35, front USBC_SHELL_OVERHANG past the PCB edge.
+        front = INNER_W + USBC_SHELL_OVERHANG
+        parts["usb socket"] = stadium_x(8.94, 3.26, front - 7.35, front)
+        # A cable plug pushed in all the way: overmold 12.4 x 6.6 stops at the pocket bottom, shell 8.3 x 2.5 x 6.6.
+        stop = INNER_W + USBC_WALL_LEFT
+        parts["usb plug"] = union([stadium_x(12.4, 6.6, stop, stop + 25), stadium_x(8.3, 2.5, stop - 6.6, stop)])
     if d.pcb[0] > 0:
         cx, cy = display_center(d)
         top = INNER_H - d.glass_h - 0.3
@@ -465,12 +541,12 @@ def check(base, lid, d: Display, name):
     names = list(parts)
     for i, a in enumerate(names):
         ov = (parts[a] ^ solid).volume()
-        # The display PCB is supposed to touch its standoffs / guides; allow that contact only.
-        allowed = 0.6 if a == "display" else 0.05
+        # The display and USB PCBs are supposed to touch their standoffs / rails; allow that contact only.
+        allowed = 0.6 if a in ("display", "usb board") else 0.05
         if ov > allowed:
             problems.append(f"{a} intersects the case ({ov:.2f} mm3)")
         for b in names[i + 1:]:
-            if {a, b} == {"display", "display glass"}:
+            if {a, b} in ({"display", "display glass"}, {"usb socket", "usb plug"}, {"usb board", "usb socket"}):
                 continue
             ov = (parts[a] ^ parts[b]).volume()
             if ov > 0.01:

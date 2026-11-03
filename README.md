@@ -32,7 +32,8 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
 
 ## Hardware
 
-A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md).
+A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md). Its USB-C socket is a
+breakout board wired to the ESP32-C6's built-in USB: GPIO13 = D+, GPIO12 = D-.
 
 Default pins (all changeable in `idf.py menuconfig` → *Grow Box*):
 
@@ -90,6 +91,8 @@ idf.py set-target esp32c6
 idf.py menuconfig   # Grow Box: pins, display, calibration
 idf.py build flash monitor
 ```
+
+In the case, flash through its USB-C socket: `idf.py -p /dev/ttyACM0 flash monitor`.
 
 The build also writes `build/growbox.ota` (the Zigbee OTA file) and `build/growbox_ota_index.json`.
 

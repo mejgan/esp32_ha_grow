@@ -125,7 +125,14 @@ def main():
 
     # Base from the cable side and from the USB side.
     render([(base, body)], azimuth=-20, elevation=22).save(os.path.join(out, "base_cables.png"))
-    render([(base, body)], azimuth=-120, elevation=22).save(os.path.join(out, "base_usb.png"))
+    render([(base, body)], azimuth=-120, elevation=22).save(os.path.join(out, "base_ports.png"))
+    # Close-up of the USB-C cradle from inside (front walls cut away), with the breakout board in place.
+    if gc.USB_PORT == "panel":
+        cut = gc.box(gc.OX + gc.INNER_W - 22, gc.OY + gc.USBC_Y - 16, -1, gc.OUT_W + 1, gc.OY + gc.USBC_Y + 16,
+                     gc.OZ + gc.USBC_Z + 12)
+        parts = gc.inner_parts(gc.DISPLAYS["none"])
+        render([(base ^ cut, body), (parts["usb board"], pcb_c), (parts["usb socket"], (150, 150, 160))],
+               azimuth=110, elevation=35, width=800, height=600).save(os.path.join(out, "usb_cradle.png"))
     render([(base, body)], azimuth=150, elevation=-40).save(os.path.join(out, "base_back.png"))
 
     # Every lid from the outside, plus one from the inside.
