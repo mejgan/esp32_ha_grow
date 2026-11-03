@@ -3,13 +3,15 @@
 //
 // Endpoint N = floor N (1 = bottom). Per-floor properties get a `_floorN` suffix, e.g. `state_floor2`,
 // `temperature_floor3`, `enabled_floor1`. Sensors: floor 1 DHT11 + capacitive soil, floor 2 AHT10 + YL-69 soil,
-// floor 3 AHT10 + BMP180 (pressure) + TEMT6000 (illuminance).
+// floor 3 AHT10 + BMP180 (pressure) + TEMT6000 (illuminance). Optional room sensor next to the controller on
+// endpoint 4 ("room": temperature_room, humidity_room, pressure_room for a BME280); without one these stay empty.
 import {Zcl} from "zigbee-herdsman";
 import * as m from "zigbee-herdsman-converters/lib/modernExtend";
 
 // Custom cluster 0xFC00 on every floor endpoint; attribute IDs must match main/zb_device.c.
 const CL = "growboxCtrl";
 const FLOORS = ["floor1", "floor2", "floor3"];
+const CLIMATE = [...FLOORS, "room"];
 const SOIL_FLOORS = ["floor1", "floor2"];
 
 // zigbee-herdsman decodes ZCL BOOLEAN as the number 0/1, not true/false.
@@ -40,7 +42,7 @@ export default {
     vendor: "GrowBoxDIY",
     description: "ESP32-C6 3-floor grow box controller (router)",
     extend: [
-        m.deviceEndpoints({endpoints: {floor1: 1, floor2: 2, floor3: 3}}),
+        m.deviceEndpoints({endpoints: {floor1: 1, floor2: 2, floor3: 3, room: 4}}),
         m.deviceAddCustomCluster(CL, {
             name: CL,
             ID: 0xfc00,
@@ -62,11 +64,11 @@ export default {
             commandsResponse: {},
         }),
         m.light({endpointNames: FLOORS, configureReporting: true, effect: false, powerOnBehavior: false}),
-        skipInvalid(m.temperature({endpointNames: FLOORS}), "measuredValue", INVALID_S16),
-        skipInvalid(m.humidity({endpointNames: FLOORS}), "measuredValue", INVALID_U16),
+        skipInvalid(m.temperature({endpointNames: CLIMATE}), "measuredValue", INVALID_S16),
+        skipInvalid(m.humidity({endpointNames: CLIMATE}), "measuredValue", INVALID_U16),
         // Firmware value unit is hPa, so report every 2 hPa.
         skipInvalid(
-            m.pressure({endpointNames: ["floor3"], reporting: {min: "10_SECONDS", max: "1_HOUR", change: 2}}),
+            m.pressure({endpointNames: ["floor3", "room"], reporting: {min: "10_SECONDS", max: "1_HOUR", change: 2}}),
             "measuredValue",
             INVALID_S16,
         ),

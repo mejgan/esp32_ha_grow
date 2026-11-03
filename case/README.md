@@ -28,7 +28,8 @@ about 125 x 91 x 57 mm (L x W x H) with the lid on, and 121 mm tall including th
   - screw terminals or JST connectors for the sensors.
 - **Bottom wall:** 6 cable holes (12.5 mm), labeled F1 / F2 / F3. Each floor has the LED strip cable in the lower
   hole and the sensor cable in the upper hole. Use PG7 cable glands or GX12 aviation connectors.
-- **Left wall:** low vents.
+- **Left wall:** low vents, and a 6 mm hole for the optional room sensor's cable. The sensor itself goes on
+  the outside, below the vents, so the electronics don't warm it (see `docs/WIRING.md`).
 - **Right wall:** DC power jack (12V), a flush USB-C socket for flashing and logs (see below), and high vents.
 - **Top wall:** vents.
 - **DC jack hole:** 11 mm for the plastic DC-022 5.5x2.1 jack, 8 mm for DC-099 metal jacks (`DC_JACK_D`).

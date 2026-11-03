@@ -120,6 +120,66 @@ menu "Grow Box"
             floor engages (light off) until a reading is back. A floor without its own reading uses the hottest
             other floor first, so this only happens when all temperature sensors fail.
 
+    menu "Room sensor (next to the controller, outside the grow box)"
+        choice GROWBOX_ROOM
+            prompt "Room temperature / humidity sensor"
+            default GROWBOX_ROOM_NONE
+            help
+                Shown in Zigbee2MQTT as temperature_room / humidity_room (endpoint 4), like a plain Zigbee
+                climate sensor, and on the display. Not used for the over-temperature cutoff.
+
+            config GROWBOX_ROOM_NONE
+                bool "None"
+            config GROWBOX_ROOM_DHT22
+                bool "DHT22 / AM2302 (one-wire GPIO)"
+            config GROWBOX_ROOM_DHT11
+                bool "DHT11 (one-wire GPIO)"
+            config GROWBOX_ROOM_SHT3X
+                bool "SHT30 / SHT31 / SHT35 (I2C 0x44 or 0x45)"
+            config GROWBOX_ROOM_SHT4X
+                bool "SHT40 / SHT41 / SHT45 (I2C 0x44)"
+            config GROWBOX_ROOM_HTU21D
+                bool "HTU21D / SHT21 / Si7021 (I2C 0x40)"
+            config GROWBOX_ROOM_BME280
+                bool "BME280 (I2C 0x76), adds pressure; a BMP280 gives temperature + pressure only"
+        endchoice
+
+        config GROWBOX_ROOM_DHT
+            bool
+            default y if GROWBOX_ROOM_DHT22 || GROWBOX_ROOM_DHT11
+
+        config GROWBOX_ROOM_I2C
+            bool
+            default y if GROWBOX_ROOM_SHT3X || GROWBOX_ROOM_SHT4X || GROWBOX_ROOM_HTU21D || GROWBOX_ROOM_BME280
+
+        config GROWBOX_ROOM_GPIO
+            int "Data GPIO (10 kOhm pull-up to 3V3)"
+            depends on GROWBOX_ROOM_DHT
+            default 15
+
+        choice GROWBOX_ROOM_I2C_BUS
+            prompt "I2C bus"
+            depends on GROWBOX_ROOM_I2C
+            default GROWBOX_ROOM_I2C_BUS_MAIN
+
+            config GROWBOX_ROOM_I2C_BUS_MAIN
+                bool "Floor 3 sensor bus (floor 3 SDA/SCL pins)"
+            config GROWBOX_ROOM_I2C_BUS_LP
+                bool "LP I2C bus (GPIO6 SDA, GPIO7 SCL)"
+        endchoice
+
+        config GROWBOX_ROOM_I2C_ADDR
+            hex "I2C address"
+            depends on GROWBOX_ROOM_I2C
+            range 0x08 0x77
+            default 0x44 if GROWBOX_ROOM_SHT3X || GROWBOX_ROOM_SHT4X
+            default 0x40 if GROWBOX_ROOM_HTU21D
+            default 0x76
+            help
+                The AHT10s (0x38) and the BMP180 (0x77) are already on the sensor buses, so a BME280 must use
+                0x76 (SDO to GND) and an AHT10/AHT20 cannot be the room sensor.
+    endmenu
+
     menu "Display"
         choice GROWBOX_DISPLAY
             prompt "Display type"

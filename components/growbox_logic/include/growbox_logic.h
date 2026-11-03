@@ -102,6 +102,39 @@ bool gb_aht10_convert(const uint8_t raw[6], float *temp_c, float *rh);
 /* Decodes a 5-byte DHT11 frame; false on all-zero frame or checksum mismatch. */
 bool gb_dht11_decode(const uint8_t d[5], float *temp_c, float *rh);
 
+/* Decodes a 5-byte DHT22/AM2302 frame (0.1 resolution, sign bit); false on all-zero frame or checksum mismatch. */
+bool gb_dht22_decode(const uint8_t d[5], float *temp_c, float *rh);
+
+/* Sensirion CRC-8 (poly 0x31, init 0xFF) used by SHT3x/SHT4x. */
+uint8_t gb_crc8_sensirion(const uint8_t *data, size_t len);
+
+/* SHT3x / SHT4x measurement: temp MSB, LSB, CRC, humidity MSB, LSB, CRC. False on CRC mismatch. */
+bool gb_sht3x_convert(const uint8_t raw[6], float *temp_c, float *rh);
+bool gb_sht4x_convert(const uint8_t raw[6], float *temp_c, float *rh);
+
+/* HTU21D / SHT21 / Si7021: 16-bit value + CRC (poly 0x31, init 0x00). False on CRC mismatch. */
+uint8_t gb_crc8_htu21(const uint8_t *data, size_t len);
+bool gb_htu21_temp(const uint8_t raw[3], float *temp_c);
+bool gb_htu21_rh(const uint8_t raw[3], float *rh);
+
+/* Bosch BME280 / BMP280 calibration (registers 0x88..0xA1 and, BME280 only, 0xE1..0xE7). */
+typedef struct {
+    uint16_t t1;
+    int16_t t2, t3;
+    uint16_t p1;
+    int16_t p2, p3, p4, p5, p6, p7, p8, p9;
+    uint8_t h1, h3;
+    int16_t h2, h4, h5;
+    int8_t h6;
+} gb_bme280_calib_t;
+
+/* `tp` = 26 bytes from 0x88, `h` = 7 bytes from 0xE1 (NULL for a BMP280). */
+void gb_bme280_parse_calib(const uint8_t tp[26], const uint8_t *h, gb_bme280_calib_t *c);
+
+/* Bosch reference integer compensation. Temperature in 0.01 C, pressure in Pa * 256, humidity in % * 1024. */
+void gb_bme280_compensate(const gb_bme280_calib_t *c, int32_t adc_t, int32_t adc_p, int32_t adc_h, int32_t *temp_x100,
+                          uint32_t *pressure_q24_8, uint32_t *rh_q22_10);
+
 /* One level of the DHT11 data line and how long it lasted. */
 typedef struct {
     uint8_t level;
@@ -109,7 +142,7 @@ typedef struct {
 } gb_pulse_t;
 
 /*
- * Rebuilds the 5 DHT11 frame bytes from captured line pulses. Every bit is a ~50 us low followed by a high of
+ * Rebuilds the 5 DHT11/DHT22 frame bytes from captured line pulses. Every bit is a ~50 us low followed by a high of
  * ~26 us (0) or ~70 us (1); the last 40 such low/high pairs are the data, so a missed start or response does not
  * matter. False when fewer than 40 bits were captured. The checksum is not checked here (see gb_dht11_decode).
  */

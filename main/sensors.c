@@ -4,13 +4,14 @@
 #include "analog.h"
 #include "bmp180.h"
 #include "delay.h"
-#include "dht11.h"
+#include "dht.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "growbox_logic.h"
+#include "room_sensor.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "sensors";
@@ -23,6 +24,7 @@ static i2c_master_bus_handle_t s_bus_f2; /* LP I2C: AHT10 #1 */
 static i2c_master_bus_handle_t s_bus_f3; /* HP I2C: AHT10 #2, BMP180 */
 static aht10_t s_aht_f2;
 static aht10_t s_aht_f3;
+static dht_t s_dht_f1 = DHT_INIT(CONFIG_GROWBOX_F1_DHT11_GPIO, DHT_TYPE_DHT11);
 
 static const uint8_t s_caps[GB_FLOOR_COUNT] = {
     SENSOR_CAP_HUMIDITY | SENSOR_CAP_SOIL,
@@ -108,6 +110,9 @@ esp_err_t sensors_init(void)
     if ((err = analog_init()) != ESP_OK) {
         result = err;
     }
+    if ((err = room_sensor_init()) != ESP_OK) {
+        result = err;
+    }
     return result;
 }
 
@@ -121,10 +126,10 @@ static void read_soil(analog_ch_t ch, int dry_mv, int wet_mv, floor_readings_t *
 
 static void read_floor1(floor_readings_t *out)
 {
-    out->temp_valid = dht11_read(CONFIG_GROWBOX_F1_DHT11_GPIO, &out->temp_c, &out->rh) == ESP_OK;
+    out->temp_valid = dht_read(&s_dht_f1, &out->temp_c, &out->rh) == ESP_OK;
     if (!out->temp_valid) {
         delay_at_least_ms(2000); /* DHT11 needs >= 1 s between reads */
-        out->temp_valid = dht11_read(CONFIG_GROWBOX_F1_DHT11_GPIO, &out->temp_c, &out->rh) == ESP_OK;
+        out->temp_valid = dht_read(&s_dht_f1, &out->temp_c, &out->rh) == ESP_OK;
     }
     out->rh_valid = out->temp_valid;
     read_soil(ANALOG_SOIL_CAP, CONFIG_GROWBOX_SOIL_CAP_DRY_MV, CONFIG_GROWBOX_SOIL_CAP_WET_MV, out);

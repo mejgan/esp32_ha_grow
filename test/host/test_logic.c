@@ -225,6 +225,76 @@ static void test_dht11_pulses(void)
     CHECK(!gb_dht11_frame_from_pulses(p, 0, out));
 }
 
+static void test_room_sensors(void)
+{
+    /* Sensirion CRC example from the SHT3x datasheet. */
+    const uint8_t beef[2] = {0xBE, 0xEF};
+    CHECK_EQ(gb_crc8_sensirion(beef, 2), 0x92);
+
+    float t = 0, rh = 0;
+    uint8_t raw[6] = {0x66, 0x66, 0, 0x80, 0x00, 0};
+    raw[2] = gb_crc8_sensirion(raw, 2);
+    raw[5] = gb_crc8_sensirion(raw + 3, 2);
+    CHECK(gb_sht3x_convert(raw, &t, &rh));
+    CHECK_NEAR(t, 25.0, 0.01);
+    CHECK_NEAR(rh, 50.0, 0.01);
+    CHECK(gb_sht4x_convert(raw, &t, &rh));
+    CHECK_NEAR(rh, 56.5, 0.01);
+    raw[5] ^= 1;
+    CHECK(!gb_sht3x_convert(raw, &t, &rh));
+
+    /* HTU21D datasheet examples: 0x683A -> 24.7 C, 0x4E85 -> 32.3 %RH. */
+    const uint8_t ht[3] = {0x68, 0x3A, 0x7C};
+    const uint8_t hh[3] = {0x4E, 0x85, 0x6B};
+    CHECK_EQ(gb_crc8_htu21(ht, 2), 0x7C);
+    CHECK_EQ(gb_crc8_htu21(hh, 2), 0x6B);
+    CHECK(gb_htu21_temp(ht, &t));
+    CHECK_NEAR(t, 24.69, 0.01);
+    CHECK(gb_htu21_rh(hh, &rh));
+    CHECK_NEAR(rh, 32.34, 0.01);
+    const uint8_t bad[3] = {0x68, 0x3A, 0x7D};
+    CHECK(!gb_htu21_temp(bad, &t));
+
+    /* DHT22: 65.2 %, 35.1 C and -10.1 C. */
+    const uint8_t d1[5] = {0x02, 0x8C, 0x01, 0x5F, (0x02 + 0x8C + 0x01 + 0x5F) & 0xFF};
+    CHECK(gb_dht22_decode(d1, &t, &rh));
+    CHECK_NEAR(rh, 65.2, 1e-3);
+    CHECK_NEAR(t, 35.1, 1e-3);
+    const uint8_t d2[5] = {0x02, 0x8C, 0x80, 0x65, (0x02 + 0x8C + 0x80 + 0x65) & 0xFF};
+    CHECK(gb_dht22_decode(d2, &t, &rh));
+    CHECK_NEAR(t, -10.1, 1e-3);
+
+    /* BMP280/BME280 datasheet example calibration: 25.08 C; the 64-bit reference gives 25767233 (100653.25 Pa,
+     * float formula 100653.26 Pa). */
+    const int16_t tp_words[12] = {27504, 26435, -1000, (int16_t)36477, -10685, 3024, 2855, 140, -7, 15500, -14600, 6000};
+    uint8_t tp[26] = {0};
+    for (int i = 0; i < 12; i++) {
+        tp[2 * i] = (uint8_t)(tp_words[i] & 0xFF);
+        tp[2 * i + 1] = (uint8_t)((uint16_t)tp_words[i] >> 8);
+    }
+    tp[25] = 75; /* H1 */
+    const uint8_t hreg[7] = {0x6A, 0x01, 0x00, 0x13, 0x08, 0x00, 0x1E}; /* H2=362 H3=0 H4=0x13*16+8=312 H5=0 H6=30 */
+    gb_bme280_calib_t c;
+    gb_bme280_parse_calib(tp, hreg, &c);
+    CHECK_EQ(c.t1, 27504);
+    CHECK_EQ(c.p1, 36477);
+    CHECK_EQ(c.p9, 6000);
+    CHECK_EQ(c.h2, 362);
+    CHECK_EQ(c.h4, 312);
+    CHECK_EQ(c.h6, 30);
+    int32_t t100;
+    uint32_t pq, hq;
+    gb_bme280_compensate(&c, 519888, 415148, 30000, &t100, &pq, &hq);
+    CHECK_EQ(t100, 2508);
+    CHECK_EQ(pq, 25767233);
+    CHECK_NEAR(pq / 256.0, 100653.26, 0.02);
+    /* Humidity: in range and rising with the raw value. */
+    uint32_t hq2;
+    gb_bme280_compensate(&c, 519888, 415148, 32000, &t100, &pq, &hq2);
+    CHECK(hq <= 100 * 1024 && hq2 <= 100 * 1024);
+    CHECK(hq2 > hq);
+}
+
 /* ---------- OTA parser ---------- */
 
 typedef struct {
@@ -366,6 +436,7 @@ int main(void)
     test_bmp180();
     test_aht10_dht11();
     test_dht11_pulses();
+    test_room_sensors();
     test_ota_parser();
     TEST_MAIN_END();
 }

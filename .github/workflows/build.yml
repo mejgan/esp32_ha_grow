@@ -41,7 +41,7 @@ jobs:
           python case/growbox_case.py --check --out stl-check
 
   firmware:
-    name: Firmware (${{ matrix.display }})
+    name: Firmware (${{ matrix.display }} + room sensor variant)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

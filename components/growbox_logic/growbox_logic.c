@@ -202,6 +202,173 @@ bool gb_dht11_decode(const uint8_t d[5], float *temp_c, float *rh)
     return true;
 }
 
+bool gb_dht22_decode(const uint8_t d[5], float *temp_c, float *rh)
+{
+    if ((d[0] | d[1] | d[2] | d[3] | d[4]) == 0) {
+        return false;
+    }
+    if (((d[0] + d[1] + d[2] + d[3]) & 0xFF) != d[4]) {
+        return false;
+    }
+    *rh = ((d[0] << 8) | d[1]) * 0.1f;
+    float t = (((d[2] & 0x7F) << 8) | d[3]) * 0.1f;
+    *temp_c = (d[2] & 0x80) ? -t : t;
+    return true;
+}
+
+static uint8_t crc8(const uint8_t *data, size_t len, uint8_t init)
+{
+    uint8_t crc = init;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+uint8_t gb_crc8_sensirion(const uint8_t *data, size_t len)
+{
+    return crc8(data, len, 0xFF);
+}
+
+uint8_t gb_crc8_htu21(const uint8_t *data, size_t len)
+{
+    return crc8(data, len, 0x00);
+}
+
+static bool sht_words(const uint8_t raw[6], uint16_t *t, uint16_t *h)
+{
+    if (gb_crc8_sensirion(raw, 2) != raw[2] || gb_crc8_sensirion(raw + 3, 2) != raw[5]) {
+        return false;
+    }
+    *t = (uint16_t)((raw[0] << 8) | raw[1]);
+    *h = (uint16_t)((raw[3] << 8) | raw[4]);
+    return true;
+}
+
+static float clamp_pct(float v)
+{
+    return v < 0.0f ? 0.0f : (v > 100.0f ? 100.0f : v);
+}
+
+bool gb_sht3x_convert(const uint8_t raw[6], float *temp_c, float *rh)
+{
+    uint16_t t, h;
+    if (!sht_words(raw, &t, &h)) {
+        return false;
+    }
+    *temp_c = -45.0f + 175.0f * t / 65535.0f;
+    *rh = clamp_pct(100.0f * h / 65535.0f);
+    return true;
+}
+
+bool gb_sht4x_convert(const uint8_t raw[6], float *temp_c, float *rh)
+{
+    uint16_t t, h;
+    if (!sht_words(raw, &t, &h)) {
+        return false;
+    }
+    *temp_c = -45.0f + 175.0f * t / 65535.0f;
+    *rh = clamp_pct(-6.0f + 125.0f * h / 65535.0f);
+    return true;
+}
+
+static bool htu21_word(const uint8_t raw[3], uint16_t *v)
+{
+    if (gb_crc8_htu21(raw, 2) != raw[2]) {
+        return false;
+    }
+    *v = (uint16_t)(((raw[0] << 8) | raw[1]) & ~0x3u); /* low 2 bits are status */
+    return true;
+}
+
+bool gb_htu21_temp(const uint8_t raw[3], float *temp_c)
+{
+    uint16_t v;
+    if (!htu21_word(raw, &v)) {
+        return false;
+    }
+    *temp_c = -46.85f + 175.72f * v / 65536.0f;
+    return true;
+}
+
+bool gb_htu21_rh(const uint8_t raw[3], float *rh)
+{
+    uint16_t v;
+    if (!htu21_word(raw, &v)) {
+        return false;
+    }
+    *rh = clamp_pct(-6.0f + 125.0f * v / 65536.0f);
+    return true;
+}
+
+void gb_bme280_parse_calib(const uint8_t tp[26], const uint8_t *h, gb_bme280_calib_t *c)
+{
+#define U16(i) ((uint16_t)(tp[(i)] | (tp[(i) + 1] << 8)))
+#define S16(i) ((int16_t)U16(i))
+    memset(c, 0, sizeof(*c));
+    c->t1 = U16(0);
+    c->t2 = S16(2);
+    c->t3 = S16(4);
+    c->p1 = U16(6);
+    c->p2 = S16(8);
+    c->p3 = S16(10);
+    c->p4 = S16(12);
+    c->p5 = S16(14);
+    c->p6 = S16(16);
+    c->p7 = S16(18);
+    c->p8 = S16(20);
+    c->p9 = S16(22);
+    c->h1 = tp[25];
+#undef U16
+#undef S16
+    if (h != NULL) {
+        c->h2 = (int16_t)(h[0] | (h[1] << 8));
+        c->h3 = h[2];
+        c->h4 = (int16_t)(((int16_t)(int8_t)h[3] * 16) | (h[4] & 0x0F));
+        c->h5 = (int16_t)(((int16_t)(int8_t)h[5] * 16) | (h[4] >> 4));
+        c->h6 = (int8_t)h[6];
+    }
+}
+
+void gb_bme280_compensate(const gb_bme280_calib_t *c, int32_t adc_t, int32_t adc_p, int32_t adc_h, int32_t *temp_x100,
+                          uint32_t *pressure_q24_8, uint32_t *rh_q22_10)
+{
+    int32_t v1 = ((((adc_t >> 3) - ((int32_t)c->t1 << 1))) * ((int32_t)c->t2)) >> 11;
+    int32_t v2 = (((((adc_t >> 4) - ((int32_t)c->t1)) * ((adc_t >> 4) - ((int32_t)c->t1))) >> 12) * ((int32_t)c->t3)) >> 14;
+    int32_t t_fine = v1 + v2;
+    *temp_x100 = (t_fine * 5 + 128) >> 8;
+
+    /* Bosch reference; left shifts of signed values written as multiplications (same result, no UB). */
+    int64_t p1 = ((int64_t)t_fine) - 128000;
+    int64_t p2 = p1 * p1 * (int64_t)c->p6;
+    p2 = p2 + ((p1 * (int64_t)c->p5) * 131072);
+    p2 = p2 + (((int64_t)c->p4) * 34359738368LL);
+    p1 = ((p1 * p1 * (int64_t)c->p3) >> 8) + ((p1 * (int64_t)c->p2) * 4096);
+    p1 = ((140737488355328LL + p1) * ((int64_t)c->p1)) >> 33;
+    if (p1 == 0) {
+        *pressure_q24_8 = 0;
+    } else {
+        int64_t p = 1048576 - adc_p;
+        p = (((p * 2147483648LL) - p2) * 3125) / p1;
+        p1 = (((int64_t)c->p9) * (p >> 13) * (p >> 13)) >> 25;
+        p2 = (((int64_t)c->p8) * p) >> 19;
+        p = ((p + p1 + p2) >> 8) + (((int64_t)c->p7) * 16);
+        *pressure_q24_8 = (uint32_t)p;
+    }
+
+    int32_t h = t_fine - ((int32_t)76800);
+    h = (((((adc_h * 16384) - (((int32_t)c->h4) * 1048576) - (((int32_t)c->h5) * h)) + ((int32_t)16384)) >> 15) *
+         (((((((h * ((int32_t)c->h6)) >> 10) * (((h * ((int32_t)c->h3)) >> 11) + ((int32_t)32768))) >> 10) +
+            ((int32_t)2097152)) * ((int32_t)c->h2) + 8192) >> 14));
+    h = (h - (((((h >> 15) * (h >> 15)) >> 7) * ((int32_t)c->h1)) >> 4));
+    h = h < 0 ? 0 : h;
+    h = h > 419430400 ? 419430400 : h;
+    *rh_q22_10 = (uint32_t)(h >> 12);
+}
+
 /* Bit cell limits (us). A '0' high lasts ~26 us, a '1' ~70 us; the low before each bit ~50 us. */
 #define DHT_LOW_MIN_US   20
 #define DHT_LOW_MAX_US   120

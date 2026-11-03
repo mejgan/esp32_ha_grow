@@ -29,6 +29,9 @@ bool zb_device_get_local_minute(uint16_t *minute_of_day);
 /* Writes valid readings of `floor` into its ZCL attributes (invalid ones are left untouched). */
 void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r);
 
+/* Writes the room sensor's valid readings (endpoint 4; no-op without a room sensor). */
+void zb_device_publish_room(const floor_readings_t *r);
+
 /* Writes the floor's light output, settings and status flags into its ZCL attributes, only where changed. */
 void zb_device_publish_floor_state(uint8_t floor, const gb_settings_t *s, gb_light_output_t out, bool heat_lock,
                                    bool sensor_fault);

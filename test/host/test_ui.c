@@ -51,6 +51,7 @@ static void check_grid(const gb_ui_status_t *st, uint8_t cols, uint8_t rows)
     CHECK(pages >= 1);
     bool seen[GB_FLOOR_COUNT] = {false};
     bool seen_time = false;
+    bool seen_room = false;
     for (uint8_t p = 0; p < pages; p++) {
         gb_ui_render(st, p, cols, rows, &s);
         check_screen_shape(&s, cols, rows);
@@ -61,6 +62,7 @@ static void check_grid(const gb_ui_status_t *st, uint8_t cols, uint8_t rows)
             seen[f] |= screen_contains(&s, a) || screen_contains(&s, b);
         }
         seen_time |= screen_contains(&s, "13:05");
+        seen_room |= screen_contains(&s, "Room ") || screen_contains(&s, "Rm ");
     }
     for (int f = 0; f < GB_FLOOR_COUNT; f++) {
         if (!seen[f]) {
@@ -69,6 +71,7 @@ static void check_grid(const gb_ui_status_t *st, uint8_t cols, uint8_t rows)
         CHECK(seen[f]);
     }
     CHECK(seen_time);
+    CHECK_EQ(seen_room, st->room.present);
 
     /* Pages wrap around. */
     static gb_ui_screen_t a, b;
@@ -94,6 +97,18 @@ static void test_all_grids(void)
     for (size_t i = 0; i < sizeof(k_grids) / sizeof(k_grids[0]); i++) {
         check_grid(&st, k_grids[i].cols, k_grids[i].rows);
     }
+    /* Room sensor with pressure, failing humidity, and no room sensor at all. */
+    st.room.has_pressure = true;
+    st.room.pressure_valid = true;
+    st.room.pressure_hpa = 1009.0f;
+    st.room.rh_valid = false;
+    for (size_t i = 0; i < sizeof(k_grids) / sizeof(k_grids[0]); i++) {
+        check_grid(&st, k_grids[i].cols, k_grids[i].rows);
+    }
+    st.room.present = false;
+    for (size_t i = 0; i < sizeof(k_grids) / sizeof(k_grids[0]); i++) {
+        check_grid(&st, k_grids[i].cols, k_grids[i].rows);
+    }
 }
 
 static void test_content(void)
@@ -108,6 +123,7 @@ static void test_content(void)
     CHECK(screen_contains(&s, "F1  80%  24.5\x7f" "C  55%"));
     CHECK(screen_contains(&s, "F2  HOT"));
     CHECK(screen_contains(&s, "F3  disabled"));
+    CHECK(screen_contains(&s, "Room 22.4\x7f" "C  47%"));
     CHECK_EQ(s.style[0], GB_UI_STYLE_TITLE);
     CHECK_EQ(s.style[1], GB_UI_STYLE_GOOD);
     CHECK_EQ(s.style[2], GB_UI_STYLE_WARN);
@@ -128,6 +144,7 @@ static void test_content(void)
     /* Big TFT: everything on one page. */
     CHECK_EQ(gb_ui_page_count(&st, 20, 20), 1);
     gb_ui_render(&st, 0, 20, 20, &s);
+    CHECK(screen_contains(&s, "Room 22.4"));
     CHECK(screen_contains(&s, "Floor 1: ON 80%"));
     CHECK(screen_contains(&s, "Floor 3: disabled"));
 

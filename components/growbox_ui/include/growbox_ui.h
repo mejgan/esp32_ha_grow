@@ -43,8 +43,17 @@ typedef struct {
     float temp_c, rh, soil_pct, pressure_hpa, lux;
 } gb_ui_floor_t;
 
+/* Optional room sensor next to the controller. */
+typedef struct {
+    bool present;
+    bool has_pressure;
+    bool temp_valid, rh_valid, pressure_valid;
+    float temp_c, rh, pressure_hpa;
+} gb_ui_room_t;
+
 typedef struct {
     gb_ui_floor_t floor[GB_FLOOR_COUNT];
+    gb_ui_room_t room;
     bool joined;
     bool time_valid;
     uint16_t minute_of_day;

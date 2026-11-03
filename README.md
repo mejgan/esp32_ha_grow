@@ -21,6 +21,9 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
   - Set from the Zigbee coordinator (Zigbee2MQTT).
   - Survives crashes, watchdog resets and OTA restarts, so the schedule keeps running without the network.
   - Lost only on power loss; until the next sync, auto mode keeps the lights off.
+- **Room sensor (optional):** a temperature + humidity sensor next to the controller, outside the grow box.
+  - Supported: DHT22, DHT11, SHT3x, SHT4x, HTU21D/Si7021, or BME280 (which adds pressure).
+  - In Home Assistant it shows up like a plain Zigbee climate sensor (`temperature_room`, `humidity_room`).
 - **Display (optional):**
   - SSD1306 (128x64 and 128x32) and SH1106 OLEDs, 16x2 and 20x4 HD44780 LCDs on a PCF8574 backpack, ST7789 and
     ILI9341 TFTs.
@@ -31,6 +34,9 @@ an optional display. It joins Zigbee as a router and is controlled from Home Ass
 - **Firmware updates over Zigbee** from Zigbee2MQTT, with automatic rollback if the new firmware never comes up.
 
 ## Hardware
+
+**Wiring for every sensor, the LED strips, power, displays, button and the optional room sensor:
+[docs/WIRING.md](docs/WIRING.md).** Plant time-lapse with a camera: [docs/TIMELAPSE.md](docs/TIMELAPSE.md).
 
 A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md). Its USB-C socket is a
 breakout board wired to the ESP32-C6's built-in USB: GPIO13 = D+, GPIO12 = D-.
@@ -160,6 +166,7 @@ Note the mV in dry air and in water and set them in *Grow Box → Soil sensor ca
   to images.
 - `tools/make_ota_image.py`: wraps `growbox.bin` into a Zigbee OTA file.
 - `case/`: enclosure generator, STLs and previews.
+- `docs/`: wiring guide and diagram (`make_wiring_diagram.py` redraws it), camera time-lapse guide.
 
 Run the host tests:
 

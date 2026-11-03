@@ -91,6 +91,26 @@ static void add_header(block_t *b, const gb_ui_status_t *st, uint8_t cols)
     add_line(b, cols, GB_UI_STYLE_TITLE, 4, c1, c2, c3, c4);
 }
 
+/* "Room 22.1°C  45%" (+ pressure when it fits). */
+static void add_room_line(block_t *b, const gb_ui_room_t *r, uint8_t cols)
+{
+    char t_l[16], t_s[16], h[8], c1[48], c2[48], c3[48];
+    fmt_temp(t_l, sizeof(t_l), r->temp_valid, r->temp_c, true);
+    fmt_temp(t_s, sizeof(t_s), r->temp_valid, r->temp_c, false);
+    fmt_pct(h, sizeof(h), r->rh_valid, r->rh);
+    if (r->has_pressure && r->pressure_valid) {
+        snprintf(c1, sizeof(c1), "Room %s  %s  %.0fhPa", t_l, h, r->pressure_hpa);
+    } else {
+        snprintf(c1, sizeof(c1), "Room %s  %s", t_l, h);
+    }
+    snprintf(c2, sizeof(c2), "Room %s %s", t_l, h);
+    snprintf(c3, sizeof(c3), "Rm %s %s", t_s, h);
+    /* A BMP280 has no humidity; it only counts as a fault when there is no pressure either. */
+    bool ok = r->temp_valid && (r->rh_valid || (r->has_pressure && r->pressure_valid));
+    uint8_t style = ok ? GB_UI_STYLE_NORMAL : GB_UI_STYLE_WARN;
+    add_line(b, cols, style, 3, c1, c2, c3);
+}
+
 static void add_overview_line(block_t *b, const gb_ui_floor_t *f, unsigned num, uint8_t cols)
 {
     char c1[48], c2[48];
@@ -287,10 +307,14 @@ static void build_layout(const gb_ui_status_t *st, uint8_t cols, uint8_t rows, l
         floor_lines += floors[f].n;
     }
 
-    if (1 + floor_lines <= rows) {
-        /* Everything fits: one page with the header followed by every floor. */
+    unsigned header_lines = 1 + (st->room.present ? 1 : 0);
+    if (header_lines + floor_lines <= rows) {
+        /* Everything fits: one page with the header (and room line) followed by every floor. */
         lay->single_page = true;
         add_header(&lay->block[0], st, cols);
+        if (st->room.present) {
+            add_room_line(&lay->block[0], &st->room, cols);
+        }
         for (int f = 0; f < GB_FLOOR_COUNT; f++) {
             lay->block[1 + f] = floors[f];
         }
@@ -302,6 +326,9 @@ static void build_layout(const gb_ui_status_t *st, uint8_t cols, uint8_t rows, l
     add_header(ov, st, cols);
     for (int f = 0; f < GB_FLOOR_COUNT; f++) {
         add_overview_line(ov, &st->floor[f], f + 1, cols);
+    }
+    if (st->room.present) {
+        add_room_line(ov, &st->room, cols);
     }
     for (int f = 0; f < GB_FLOOR_COUNT; f++) {
         lay->block[1 + f] = floors[f];

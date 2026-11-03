@@ -9,6 +9,7 @@ static inline gb_ui_status_t ui_sample_status(void)
         .joined = true,
         .time_valid = true,
         .minute_of_day = 13 * 60 + 5,
+        .room = {.present = true, .temp_valid = true, .rh_valid = true, .temp_c = 22.4f, .rh = 47.0f},
     };
     st.floor[0] = (gb_ui_floor_t){
         .enabled = true,

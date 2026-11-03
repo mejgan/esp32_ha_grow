@@ -92,6 +92,11 @@ DC_JACK_D = 11.0
 DC_JACK_Y, DC_JACK_Z = 20.0, 14.0
 DC_JACK_BODY = (16.0, 12.0)     # length inside, diameter (collision check)
 
+# Cable hole for the optional room sensor, which sits outside the box on the left wall (away from the warm
+# electronics). 0 removes it.
+ROOM_HOLE_D = 6.0
+ROOM_HOLE_Y, ROOM_HOLE_Z = 48.0, 8.0
+
 # Panel push button in the lid, wired in parallel to BOOT (GPIO9 to GND).
 BUTTON_D = 12.0
 BUTTON_X, BUTTON_Y = 16.0, 11.0
@@ -395,6 +400,8 @@ def make_base():
         cuts.append(usb.translate([-1, yc - USB_SLOT_W / 2 + OY, USB_SLOT_Z - USB_SLOT_H / 2 + OZ]))
     for i in range(6):
         cuts.append(ibox(-WALL - 1, 14 + i * 5.0, 3, 1, 16 + i * 5.0, 21))
+    if ROOM_HOLE_D > 0:
+        cuts.append(teardrop_x(ROOM_HOLE_Y + OY, ROOM_HOLE_Z + OZ, ROOM_HOLE_D, WALL + 2, -1))
 
     # Right wall (X = W): DC jack, panel USB-C, labels, high vents.
     cuts.append(teardrop_x(DC_JACK_Y + OY, DC_JACK_Z + OZ, DC_JACK_D, WALL + 2, OX + INNER_W - 1))

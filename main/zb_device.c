@@ -6,6 +6,7 @@
 #include <sys/time.h>
 
 #include "app.h"
+#include "room_sensor.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -21,6 +22,7 @@ static const char *TAG = "zb_device";
 /* Endpoint N+1 is floor N: dimmable light + that floor's sensors + the grow box cluster. */
 #define FLOOR_EP(floor) ((uint8_t)((floor) + 1))
 #define EP_MAIN         FLOOR_EP(0) /* Basic strings, Time client, OTA client */
+#define EP_ROOM         4           /* optional room sensor: temperature, humidity (+ pressure) */
 
 #define GROWBOX_CLUSTER_ID 0xFC00
 
@@ -465,11 +467,45 @@ static ezb_af_ep_desc_t create_floor_endpoint(uint8_t floor)
     return ep;
 }
 
+/* Plain temperature sensor endpoint for the room sensor next to the controller. */
+static ezb_af_ep_desc_t create_room_endpoint(uint8_t caps)
+{
+    static ezb_zcl_temperature_measurement_cluster_server_config_t temp_cfg = {
+        .measured_value = INT16_MIN, .min_measured_value = -4000, .max_measured_value = 8500};
+    static ezb_zcl_rel_humidity_measurement_cluster_server_config_t hum_cfg = {
+        .measured_value = 0xFFFF, .min_measured_value = 0, .max_measured_value = 10000};
+    static ezb_zcl_pressure_measurement_cluster_server_config_t press_cfg = {
+        .measured_value = INT16_MIN, .min_measured_value = 300, .max_measured_value = 1100};
+    const ezb_af_ep_config_t ep_cfg = {
+        .ep_id = EP_ROOM,
+        .app_profile_id = EZB_AF_HA_PROFILE_ID,
+        .app_device_id = EZB_ZHA_TEMPERATURE_SENSOR_DEVICE_ID,
+        .app_device_version = 0,
+    };
+    ezb_af_ep_desc_t ep = ezb_af_create_endpoint_desc(&ep_cfg);
+    ESP_ERROR_CHECK(add_cluster(ep, ezb_zcl_identify_create_cluster_desc(NULL, EZB_ZCL_CLUSTER_SERVER)));
+    ESP_ERROR_CHECK(
+        add_cluster(ep, ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    if (caps & SENSOR_CAP_HUMIDITY) {
+        ESP_ERROR_CHECK(
+            add_cluster(ep, ezb_zcl_rel_humidity_measurement_create_cluster_desc(&hum_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    }
+    if (caps & SENSOR_CAP_PRESSURE) {
+        ESP_ERROR_CHECK(
+            add_cluster(ep, ezb_zcl_pressure_measurement_create_cluster_desc(&press_cfg, EZB_ZCL_CLUSTER_SERVER)));
+    }
+    return ep;
+}
+
 static void create_data_model(void)
 {
     ezb_af_device_desc_t dev = ezb_af_create_device_desc();
     for (uint8_t f = 0; f < GB_FLOOR_COUNT; f++) {
         ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_add_endpoint_desc(dev, create_floor_endpoint(f))));
+    }
+    uint8_t room_caps = room_sensor_caps();
+    if (room_caps != 0) {
+        ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_add_endpoint_desc(dev, create_room_endpoint(room_caps))));
     }
     ESP_ERROR_CHECK(esp_zigbee_err_to_esp(ezb_af_device_desc_register(dev)));
 
@@ -601,14 +637,9 @@ static void set_attr(uint8_t ep, uint16_t cluster, uint16_t attr, void *value)
     }
 }
 
-void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
+/* Caller holds the Zigbee lock. Temperature, humidity, pressure and illuminance of one endpoint. */
+static void publish_climate(uint8_t ep, uint8_t caps, const floor_readings_t *r)
 {
-    if (!s_zb_ready || floor >= GB_FLOOR_COUNT) {
-        return;
-    }
-    uint8_t ep = FLOOR_EP(floor);
-    uint8_t caps = sensors_floor_caps(floor);
-    esp_zigbee_lock_acquire(portMAX_DELAY);
     if (r->temp_valid) {
         int16_t v = (int16_t)lroundf(r->temp_c * 100);
         set_attr(ep, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
@@ -628,10 +659,32 @@ void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
         set_attr(ep, EZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT, EZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,
                  &lux);
     }
+}
+
+void zb_device_publish_floor_sensors(uint8_t floor, const floor_readings_t *r)
+{
+    if (!s_zb_ready || floor >= GB_FLOOR_COUNT) {
+        return;
+    }
+    uint8_t ep = FLOOR_EP(floor);
+    uint8_t caps = sensors_floor_caps(floor);
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    publish_climate(ep, caps, r);
     if ((caps & SENSOR_CAP_SOIL) && r->soil_valid) {
         uint16_t pct = r->soil_pct_x100;
         set_attr(ep, GROWBOX_CLUSTER_ID, ATTR_SOIL_MOISTURE, &pct);
     }
+    esp_zigbee_lock_release();
+}
+
+void zb_device_publish_room(const floor_readings_t *r)
+{
+    uint8_t caps = room_sensor_caps();
+    if (!s_zb_ready || caps == 0) {
+        return;
+    }
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    publish_climate(EP_ROOM, caps, r);
     esp_zigbee_lock_release();
 }
 

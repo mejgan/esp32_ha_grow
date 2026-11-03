@@ -13,6 +13,7 @@
 #include "growbox_logic.h"
 #include "light_pwm.h"
 #include "nvs_flash.h"
+#include "room_sensor.h"
 #include "sdkconfig.h"
 #include "sensors.h"
 #include "settings.h"
@@ -189,10 +190,29 @@ static void fill_ui_floor(gb_ui_floor_t *u, uint8_t floor, const gb_settings_t *
     }
 }
 
+static void fill_ui_room(gb_ui_room_t *u, const floor_readings_t *r)
+{
+    uint8_t caps = room_sensor_caps();
+    *u = (gb_ui_room_t){
+        .present = caps != 0,
+        .has_pressure = (caps & SENSOR_CAP_PRESSURE) != 0,
+    };
+    if (r != NULL) {
+        u->temp_valid = r->temp_valid;
+        u->temp_c = r->temp_c;
+        u->rh_valid = r->rh_valid;
+        u->rh = r->rh;
+        u->pressure_valid = r->pressure_valid;
+        u->pressure_hpa = r->pressure_hpa;
+    }
+}
+
 static void app_task(void *arg)
 {
     (void)arg;
     static floor_readings_t readings[GB_FLOOR_COUNT];
+    static floor_readings_t room;
+    bool have_room = false;
     bool have_reading[GB_FLOOR_COUNT] = {false};
     bool temp_valid[GB_FLOOR_COUNT] = {false};
     float temp_c[GB_FLOOR_COUNT] = {0};
@@ -250,6 +270,11 @@ static void app_task(void *arg)
                 temp_c[f] = readings[f].temp_c;
                 fault[f] = sensors_floor_fault(f, &readings[f]);
                 zb_device_publish_floor_sensors(f, &readings[f]);
+            }
+            if (room_sensor_caps() != 0) {
+                room_sensor_read(&room);
+                have_room = true;
+                zb_device_publish_room(&room);
             }
             first_read = false;
             last_read_us = esp_timer_get_time();
@@ -314,6 +339,7 @@ static void app_task(void *arg)
             fill_ui_floor(&ui.floor[f], f, &s[f], out[f], heat_lock[f], fault[f],
                           have_reading[f] ? &readings[f] : NULL);
         }
+        fill_ui_room(&ui.room, have_room ? &room : NULL);
 
         xSemaphoreTake(s_lock, portMAX_DELAY);
         memcpy(s_out, out, sizeof(s_out));
@@ -358,6 +384,7 @@ void app_main(void)
         fill_ui_floor(&s_ui.floor[f], f, &s_settings[f], (gb_light_output_t){.on = false, .level = 1}, false, false,
                       NULL);
     }
+    fill_ui_room(&s_ui.room, NULL);
 
     light_pwm_init();
     err = sensors_init();
