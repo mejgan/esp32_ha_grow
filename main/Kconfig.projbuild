@@ -11,7 +11,7 @@ menu "Grow Box"
             default 0
 
         config GROWBOX_F1_LIGHT_PWM_GPIO
-            int "LED strip 1 PWM GPIO (IRF520 SIG)"
+            int "LED strip 1 PWM GPIO (MOSFET gate)"
             default 19
     endmenu
 
@@ -30,7 +30,7 @@ menu "Grow Box"
                 Powered only during a read to slow down probe corrosion.
 
         config GROWBOX_F2_LIGHT_PWM_GPIO
-            int "LED strip 2 PWM GPIO (IRF520 SIG)"
+            int "LED strip 2 PWM GPIO (MOSFET gate)"
             default 20
     endmenu
 
@@ -49,7 +49,7 @@ menu "Grow Box"
             default 2
 
         config GROWBOX_F3_LIGHT_PWM_GPIO
-            int "LED strip 3 PWM GPIO (IRF520 SIG)"
+            int "LED strip 3 PWM GPIO (MOSFET gate)"
             default 21
     endmenu
 

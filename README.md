@@ -1,184 +1,180 @@
 # GrowBox-C6
 
-ESP32-C6 firmware for a three-floor grow box. It runs the LED strip of each floor on a schedule, cuts the light
-when a floor gets too hot, reads temperature, humidity, soil moisture, pressure and light, and shows everything on
-an optional display. It joins Zigbee as a router and is controlled from Home Assistant through Zigbee2MQTT.
+ESP32-C6 controller for a three-floor grow box. It runs one LED strip per floor on a schedule, cuts the light when a
+floor gets too hot, and reads temperature, humidity, soil moisture, pressure and light. It shows everything on an
+optional display, and can take time-lapse photos of the plants. It is a Zigbee device, controlled from Home
+Assistant through Zigbee2MQTT.
+
+![case](case/preview/exploded.png)
+
+**New here? Start with the [build guide](docs/GUIDE.md)**: parts, case, firmware, pairing, wiring, setup and
+troubleshooting, step by step.
 
 ## Features
 
-- **Per floor:** dimmable LED strip (PWM), auto schedule (on/off time to the minute, brightness) or manual
-  control, over-temperature cutoff with 2 °C hysteresis, enable/disable.
+- **Per floor:**
+  - Dimmable LED strip.
+  - Schedule (on/off to the minute, brightness) or manual control.
+  - Over-temperature cutoff with 2 °C hysteresis.
+  - Enable/disable.
 - **Sensors:**
   - Floor 1: DHT11 and a capacitive soil sensor.
   - Floor 2: AHT10 and a YL-69 soil sensor.
-  - Floor 3: AHT10, BMP180 for pressure and a backup temperature, and a TEMT6000 light sensor.
+  - Floor 3: AHT10, BMP180 (pressure) and a TEMT6000 light sensor.
 - **Fail-safe:**
   - A floor without its own temperature reading uses the hottest other floor.
-  - If no temperature sensor gives a reading for `GROWBOX_TEMP_FAILSAFE_MIN` minutes (default 10), the lights go
-    off.
-  - A `sensor_fault` flag tells Home Assistant when a sensor gives no reading.
-- **Clock:**
-  - Set from the Zigbee coordinator (Zigbee2MQTT).
-  - Survives crashes, watchdog resets and OTA restarts, so the schedule keeps running without the network.
-  - Lost only on power loss; until the next sync, auto mode keeps the lights off.
-- **Cameras (optional):** up to three Arducam Mega SPI cameras, one per floor.
-  - While a floor's light is on, its camera takes a photo every 30 minutes and uploads it over Wi-Fi to a small
-    server on your PC (`tools/photo_server.py`).
-  - The server also makes the time-lapse videos.
-  - Needs the Zigbee end-device role. See [docs/CAMERAS.md](docs/CAMERAS.md).
-- **Room sensor (optional):** a temperature + humidity sensor next to the controller, outside the grow box.
-  - Supported: DHT22, DHT11, SHT3x, SHT4x, HTU21D/Si7021, or BME280 (which adds pressure).
-  - In Home Assistant it shows up like a plain Zigbee climate sensor (`temperature_room`, `humidity_room`).
+  - If no temperature sensor gives a reading for 10 minutes, the lights go off.
+  - A `sensor_fault` flag tells Home Assistant when a sensor stops answering.
+- **Works offline:**
+  - Settings live in the box.
+  - The clock comes from Zigbee2MQTT and survives resets; only a power loss needs a new sync.
 - **Display (optional):**
-  - SSD1306 (128x64 and 128x32) and SH1106 OLEDs, 16x2 and 20x4 HD44780 LCDs on a PCF8574 backpack, ST7789 and
-    ILI9341 TFTs.
-  - Pages rotate automatically.
-- **BOOT button:**
-  - Short press: next display page.
-  - Hold 10 s: Zigbee factory reset (pair again).
-- **Firmware updates over Zigbee** from Zigbee2MQTT, with automatic rollback if the new firmware never comes up.
+  - SSD1306 / SH1106 OLEDs, 16x2 / 20x4 LCDs (PCF8574 backpack), ST7789 / ILI9341 TFTs.
+  - Pages rotate automatically, and the button switches pages.
+- **Room sensor (optional):** a temperature + humidity sensor next to the box, which shows up in Home Assistant
+  like any Zigbee climate sensor. Supported: DHT22, DHT11, SHT3x, SHT4x, HTU21D / Si7021, BME280.
+- **Cameras (optional):**
+  - Up to three Arducam Mega SPI cameras.
+  - Photos upload over Wi-Fi to a small server on your PC, which also makes the time-lapse videos.
+- **Firmware updates over Zigbee,** with automatic rollback.
+- **3D-printable case:** a lid for every display, cable glands per floor, a USB-C socket for flashing, and wall
+  mounting ears.
 
-## Hardware
+![display pages](docs/display_pages.png)
 
-**Wiring for every sensor, the LED strips, power, displays, button and the optional room sensor:
-[docs/WIRING.md](docs/WIRING.md).** Plant time-lapse: [docs/CAMERAS.md](docs/CAMERAS.md) (cameras on the GrowBox) or
-[docs/TIMELAPSE.md](docs/TIMELAPSE.md) (separate ESP32-CAM boards).
+## Documentation
 
-A 3D-printable case with a lid for every supported display is in [`case/`](case/README.md). Its USB-C socket is a
-breakout board wired to the ESP32-C6's built-in USB: GPIO13 = D+, GPIO12 = D-.
+| Document | Contents |
+|---|---|
+| [docs/GUIDE.md](docs/GUIDE.md) | **Build guide**: from parts to a running box |
+| [docs/WIRING.md](docs/WIRING.md) | Every connection, pin by pin, and cable suggestions |
+| [case/README.md](case/README.md) | The case: printing, hardware, USB-C socket, mounting, changing sizes |
+| [docs/CAMERAS.md](docs/CAMERAS.md) | Cameras on the GrowBox, the photo server and time-lapse videos |
+| [docs/TIMELAPSE.md](docs/TIMELAPSE.md) | Alternative: separate ESP32-CAM boards on Wi-Fi |
+
+## Quick start
+
+For those who know ESP-IDF and Zigbee2MQTT. Everyone else: follow the [build guide](docs/GUIDE.md).
+
+1. **Build and flash.** Needs ESP-IDF v6.0.
+
+   ```bash
+   idf.py set-target esp32c6
+   idf.py menuconfig   # Grow Box: display, room sensor, pins, calibration, cameras
+   idf.py build
+   idf.py -p /dev/ttyACM0 flash monitor
+   ```
+
+2. **Install the converter.** Copy `z2m/growbox.mjs` to `<z2m data>/external_converters/`.
+3. **Allow it.** Make sure Zigbee2MQTT's `configuration.yaml` has:
+
+   ```yaml
+   advanced:
+     enable_external_js: true
+   ```
+
+   New installs write `false` there, and then the converter is ignored.
+4. **Pair.** Restart Zigbee2MQTT, enable *Permit join*, and power the box. To pair it again later, hold the button
+   for 10 s.
+
+## Hardware at a glance
+
+![wiring](docs/wiring.png)
 
 Default pins (all changeable in `idf.py menuconfig` → *Grow Box*):
 
 | Function | GPIO | Notes |
 |---|---|---|
-| Floor 1 DHT11 data | 18 | 10 kΩ pull-up recommended |
-| Floor 1 capacitive soil AOUT | 0 | ADC1 |
-| Floor 2 YL-69 AO | 1 | ADC1 |
-| Floor 2 YL-69 VCC | 10 | powered only while reading (less corrosion) |
+| Floor 1 DHT11 data | 18 | 10 kΩ pull-up |
+| Floor 1 capacitive soil AOUT | 0 | ADC |
+| Floor 2 YL-69 AO / VCC | 1 / 10 | VCC is switched: powered only while reading |
 | Floor 2 AHT10 SDA / SCL | 6 / 7 | LP I2C, fixed pins |
-| Floor 3 AHT10 + BMP180 SDA / SCL | 22 / 23 | |
-| Floor 3 TEMT6000 SIG | 2 | ADC1 |
-| LED strip PWM floor 1 / 2 / 3 | 19 / 20 / 21 | MOSFET gate |
-| Button | 9 | BOOT button of the dev board |
+| Floor 3 AHT10 + BMP180 SDA / SCL | 22 / 23 | Also the display and room sensor bus |
+| Floor 3 TEMT6000 SIG | 2 | ADC |
+| LED PWM floor 1 / 2 / 3 | 19 / 20 / 21 | Logic-level MOSFET gate (100 Ω, 10 kΩ pull-down) |
+| Button | 9 | DevKit BOOT button, plus the lid button |
+| USB-C socket D+ / D− | 13 / 12 | The ESP32-C6's built-in USB |
+| TFT SCK / MOSI / CS / DC | 4 / 5 / 11 / 3 | Only with a TFT |
+| Room sensor (DHT) | 15 | Only with a DHT room sensor |
 
-**MOSFETs:** use logic-level MOSFETs that fully switch on at 3.3 V, such as IRLZ44N or IRLB8721, or AO3400 for
-small strips. The common "IRF520 module" needs about 10 V on the gate. At 3.3 V it only half switches on, gets
-hot and dims the strip.
+**Power:**
+- A 12 V supply feeds the strips.
+- A buck converter set to 5.0 V feeds the DevKit's 5V pin.
+- Use **logic-level** MOSFETs (IRLZ44N, IRLB8721, AO3400). IRF520 modules only half switch on at 3.3 V.
 
-**Light sensor range:** the TEMT6000 tops out at about 600 lx with this circuit, so under grow lights it sits at
-the maximum.
+The suggested perfboard layout is in [the build guide](docs/GUIDE.md#6-build-the-controller-board).
 
-### Displays
+## Zigbee2MQTT and Home Assistant
 
-Pick the type in *Grow Box → Display*. I2C displays share a sensor I2C bus and need no extra pins; the floor 3 bus
-(GPIO22/23) is the default. The address is auto-detected unless set:
-- OLEDs: 0x3C / 0x3D.
-- PCF8574 backpacks: 0x27 / 0x3F and the others in their range, except 0x38, which is the AHT10's address.
+The device is `GrowBox-C6` by GrowBoxDIY. Properties have the floor as a suffix (`_floor1` … `_floor3`); the room
+sensor's use `_room`.
 
-| Display | Wiring | Grid |
-|---|---|---|
-| SSD1306 / SH1106 128x64 | VCC 3V3, GND, SDA, SCL | 21 x 8 characters |
-| SSD1306 128x32 | VCC 3V3, GND, SDA, SCL | 21 x 4 |
-| HD44780 16x2 / 20x4 + PCF8574 | VCC 5V, GND, SDA, SCL | 16 x 2 / 20 x 4 |
-| ST7789 / ILI9341 (SPI) | SCLK 4, MOSI 5, CS 11, DC 3, RST → 3V3, BL → 3V3 | 20 x 20 at 240x320, font x2 |
+| Kind | Properties |
+|---|---|
+| Light | `state_floorN`, `brightness_floorN` |
+| Readings | `temperature_floorN`, `humidity_floorN`, `soil_moisture_floor1/2`, `pressure_floor3`, `illuminance_floor3`, `temperature_room`, `humidity_room`, `pressure_room` |
+| Settings | `auto_mode_floorN`, `light_on_hour/minute_floorN`, `light_off_hour/minute_floorN`, `auto_brightness_floorN`, `max_temperature_floorN`, `enabled_floorN` |
+| Status | `heat_lock_floorN`, `sensor_fault_floorN`, `time_synced` |
+| Cameras | `take_photo_floorN` |
 
-Notes:
-- **5 V LCD backpacks:** the backpack's pull-ups pull SDA/SCL up to 5 V, and the ESP32-C6 pins are not 5 V
-  tolerant. Remove the backpack's pull-up resistors (the bus has pull-ups on the 3.3 V side) or use a level
-  shifter. Turn the contrast trimmer if the screen stays blank.
-- **TFTs:** set the panel size, rotation, offsets and color inversion in menuconfig.
-  - Typical ST7789 boards: 240x240 or 240x320, color inversion on.
-  - ST7789 boards without a CS pin: set CS to -1 and SPI mode 3.
-  - ILI9341: color inversion off, BGR on.
-- **Font size:** the TFT font scale changes how much fits on one page. Everything fits on one page from
-  240x320 at scale 2.
-- **OLED burn-in:** to save the OLED, set *Turn the display off after …* and wake it with the button.
-
-## Build and flash
-
-Needs ESP-IDF 6.0 or newer.
-
-```bash
-idf.py set-target esp32c6
-idf.py menuconfig   # Grow Box: pins, display, calibration
-idf.py build flash monitor
-```
-
-In the case, flash through its USB-C socket: `idf.py -p /dev/ttyACM0 flash monitor`.
-
-The build also writes `build/growbox.ota` (the Zigbee OTA file) and `build/growbox_ota_index.json`.
-
-**Updating from the old single-app firmware:**
-- The partition table now has two app slots for OTA. Flash once over USB with `idf.py flash`; after that,
-  updates can go over Zigbee.
-- `nvs` keeps its place, so the settings and the Zigbee network survive the switch, and the old settings format
-  is migrated.
-- `CONFIG_FREERTOS_HZ=1000` and rollback are set in `sdkconfig.defaults`. Defaults only apply to a new
-  `sdkconfig`, so delete your old `sdkconfig` (or set both options in menuconfig) before building.
-
-## Zigbee2MQTT
-
-1. Copy `z2m/growbox.mjs` to `<z2m data>/external_converters/` and restart Zigbee2MQTT.
-2. Enable *Permit join*, power the box (or hold BOOT for 10 s to re-pair) and wait for "GrowBox-C6".
-
-Properties use the floor as a suffix:
-- Light: `state_floor1`, `brightness_floor1`.
-- Readings: `temperature_floor2`, `soil_moisture_floor2`.
-- Settings: `auto_mode_floor3`, `light_on_hour_floor1` / `light_on_minute_floor1`, `max_temperature_floor1`.
-- Status: `heat_lock_floor1`, `sensor_fault_floor1`.
-
-**Behavior:**
-- Any manual light command switches the floor to manual mode.
+Behavior:
+- Any manual light command switches the floor to manual mode. Turning `auto_mode` on hands the light back to the
+  schedule.
 - While a floor is disabled or heat-locked, ON is refused and the light shows OFF again.
-- Turning `auto_mode` back on hands the light to the schedule again.
 - Out-of-range setting writes are rejected.
 
-### Firmware updates over Zigbee
+**Router or end device:**
+- By default the box joins as a Zigbee **router** and relays for other devices.
+- With cameras it must be an **end device** (menuconfig: *Component config → Zigbee → Zigbee Device Type*), because
+  Wi-Fi and a Zigbee router don't share the radio well. See [docs/CAMERAS.md](docs/CAMERAS.md).
+
+## Firmware updates over Zigbee
 
 1. Bump `PROJECT_VER` in `CMakeLists.txt` (e.g. `2.0.0` → `2.0.1`) and build.
 2. Copy `build/growbox.ota` and `build/growbox_ota_index.json` into the Zigbee2MQTT data directory.
 3. In `configuration.yaml`:
+
    ```yaml
    ota:
      zigbee_ota_override_index_location: growbox_ota_index.json
    ```
-4. Restart Zigbee2MQTT, then *OTA → Check for update → Update* on the device page.
 
-During the update the light keeps running. After the update the new firmware has to join the network (or run for
-10 minutes); otherwise the next reset rolls back to the previous version.
+4. Restart Zigbee2MQTT, then *OTA → Check for update → Update*.
 
-## Calibration
+The lights keep running during the update. The new firmware has to join the network (or run for 10 minutes);
+otherwise the next reset rolls back to the previous version.
 
-The log prints the raw soil voltage on every read:
+**Coming from the old single-app firmware:**
+- **One USB flash needed.** The partition table now has two app slots, so flash once over USB with `idf.py flash`.
+- **Nothing is lost.** Settings and the Zigbee network survive: `nvs` keeps its place, and the old settings format
+  is migrated.
+- **Start a new `sdkconfig`.** `sdkconfig.defaults` sets `CONFIG_FREERTOS_HZ=1000` and rollback, but defaults
+  only apply to a new `sdkconfig`. Delete your old one before building.
 
-```
-sensors: floor 1: temp ok 24.0C | hum ok 55.0% | soil ok 1980mV (51.4%)
-```
+## Development
 
-Note the mV in dry air and in water and set them in *Grow Box → Soil sensor calibration*.
+### Code layout
 
-## Code layout
+| Path | Contents |
+|---|---|
+| `main/` | Firmware: `main.c` (control loop), `zb_device.c` (Zigbee data model), `zb_ota.c`, `display.c` + `disp_*.c`, `camera.c` + `arducam.c` + `wifi_link.c`, sensor drivers |
+| `components/growbox_logic` | Schedule, cutoff, sensor math and decoding, OTA file parser. No ESP-IDF dependencies. |
+| `components/growbox_ui` | Display pages as text grids, 5x7 font. No ESP-IDF dependencies. |
+| `z2m/growbox.mjs` | Zigbee2MQTT converter |
+| `tools/` | `make_ota_image.py` (Zigbee OTA file), `photo_server.py` (photo server and time-lapse) |
+| `test/host/` | Unit tests, and `ui_preview`, which renders every display page to images |
+| `case/` | Case generator (`growbox_case.py`), STLs, previews |
+| `docs/` | Guides; `make_wiring_diagram.py` and `make_board_layout.py` redraw the images |
 
-- `main/`: firmware.
-  - `main.c`: control loop.
-  - `zb_device.c`: Zigbee data model.
-  - `zb_ota.c`: updates.
-  - `display.c` and `disp_*.c`: display task and drivers.
-  - Sensor drivers.
-- `components/growbox_logic`: schedule, cutoff, sensor math, DHT11 and OTA file decoding. No ESP-IDF
-  dependencies.
-- `components/growbox_ui`: display pages as text grids, and the 5x7 font. No ESP-IDF dependencies.
-- `test/host`: unit tests for both components, plus `ui_preview`, which renders every page of every display type
-  to images.
-- `tools/make_ota_image.py`: wraps `growbox.bin` into a Zigbee OTA file.
-- `tools/photo_server.py`: PC server for the camera photos, and the time-lapse videos.
-- `case/`: enclosure generator, STLs and previews.
-- `docs/`: wiring guide and diagram (`make_wiring_diagram.py` redraws it), camera time-lapse guide.
-
-Run the host tests:
+### Tests
 
 ```bash
 cmake -S test/host -B build-host && cmake --build build-host && ctest --test-dir build-host --output-on-failure
 ```
 
-CI (`.github/workflows/build.yml`) runs the host tests and builds the firmware once per display type.
+CI (`.github/workflows/build.yml`) runs:
+- the host tests;
+- the case collision check;
+- a firmware build for every display type and for the camera setups.
+
+Each firmware build is uploaded as an artifact.
