@@ -5,7 +5,8 @@ project(growbox_host_tests C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-add_compile_options(-Wall -Wextra -Werror -Wno-format-truncation)
+# Same warnings as the ESP-IDF firmware build (-Werror there); -Og enables its format-truncation checks.
+add_compile_options(-Og -Wall -Wextra -Werror -Wno-unused-parameter -Wno-sign-compare)
 
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 

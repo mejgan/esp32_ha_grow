@@ -108,7 +108,7 @@ static void add_overview_line(block_t *b, const gb_ui_floor_t *f, unsigned num, 
     } else {
         snprintf(state, sizeof(state), " off");
     }
-    char temp_l[16], temp_s[16], hum_l[8], hum_s[8];
+    char temp_l[16], temp_s[16], hum_l[16], hum_s[16];
     char t[12];
     fmt_temp(t, sizeof(t), f->temp_valid, f->temp_c, true);
     snprintf(temp_l, sizeof(temp_l), "%7s", t);
