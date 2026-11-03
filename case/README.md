@@ -1,7 +1,7 @@
 # Enclosure
 
-3D-printable case for the controller: a box for the electronics and a lid for each display type. It is about
-125 x 91 x 57 mm (L x W x H) with the lid on.
+3D-printable case for the controller: a box for the electronics and a lid for each display type. The box is
+about 125 x 91 x 57 mm (L x W x H) with the lid on, and 121 mm tall including the mounting ears.
 
 ![exploded view](preview/exploded.png)
 
@@ -34,8 +34,14 @@
 - **DC jack hole:** 11 mm for the plastic DC-022 5.5x2.1 jack, 8 mm for DC-099 metal jacks (`DC_JACK_D`).
 - **Lid:** display window and mounts, and a 12 mm momentary push button wired in parallel to the DevKit's BOOT
   button (GPIO9 to GND). Short press: next page. Hold 10 s: Zigbee reset.
-- **Back:** two keyholes for wall mounting (screws with heads up to 7.5 mm). Hang the box with the cables pointing
-  down.
+- **Mounting ears:** four ears flush with the back, two on the top edge and two on the bottom edge, with
+  countersunk holes for 4 mm wood screws. They sit near the corners so the cable glands and plugs never block the
+  screwdriver; the fit check verifies that. Mount the box with the cable holes pointing down. To fix it:
+  1. Hold the box in place and mark the four holes.
+  2. Pre-drill 2.5-3 mm.
+  3. Screw it on.
+  - **Fabric grow tent:** pull zip ties through the ear holes and around a tent pole.
+  - **Hanging instead:** the back also has two keyholes (screw heads up to 7.5 mm).
 
 ## USB-C socket
 
@@ -80,6 +86,7 @@ To get the old open slot to the DevKit's own ports instead, set `USB_PORT = "ope
 | Qty | Part |
 |---|---|
 | 4 | M3 x 10-12 countersunk self-tapping screws (lid). For M3 heat-set inserts set `SCREW_PILOT_D = 4.0`. |
+| 4 | 4 x 20 mm countersunk wood screws (mounting ears) |
 | 4 | M2 x 5 self-tapping screws (perfboard) |
 | 4 | Display screws: M2 for the 0.96" OLED, M2.5 for the 1.3" OLED, M3 for the LCDs and the 2.8" TFT. The 0.91" OLED and the 1.3" ST7789 have no holes: they sit in corner guides; fix them with a dab of hot glue. |
 | 6 | PG7 cable glands or GX12 connectors |
@@ -106,8 +113,9 @@ python case/growbox_case.py --check --display lcd2004
 ```
 
 `--check` builds simple models of the parts inside (perfboard and components, glands, DC jack, button, display
-module and glass, the USB-C breakout and a plugged-in cable). It reports any that hit each other or the case, so a changed parameter can't silently produce a
+module and glass, the USB-C breakout and a plugged-in cable, the glands and plugs outside the box, and a
+screwdriver over every mounting hole). It reports any that hit each other or the case, so a changed parameter can't silently produce a
 box that doesn't close. `python case/render_preview.py` (needs Pillow) redraws the images here.
 
 Everything else is a parameter at the top of `growbox_case.py`: box size, wall thickness, hole sizes and
-positions, perfboard position.
+positions, perfboard position, mounting ears (`EARS = False` removes them).

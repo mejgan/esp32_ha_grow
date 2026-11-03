@@ -6,7 +6,7 @@
     python case/growbox_case.py --check         # also check that nothing inside collides
 
 Parts:
-    base.stl            box with perfboard standoffs, cable holes, panel USB-C, DC jack, vents, keyholes
+    base.stl            box with perfboard standoffs, cable holes, panel USB-C, DC jack, vents, mounting ears
     lid_<display>.stl   lid with the window and mounts for one display type (see DISPLAYS)
 
 Inside sits a standard 7 x 9 cm perfboard carrying the ESP32-C6 DevKit (USB end toward the left wall), the
@@ -97,7 +97,15 @@ BUTTON_D = 12.0
 BUTTON_X, BUTTON_Y = 16.0, 11.0
 BUTTON_BODY = (22.0, 14.0)      # depth below the lid, diameter (collision check)
 
-# Wall-mount keyholes in the floor (screw head up to 7.5 mm, shank up to 4 mm).
+# Mounting ears with countersunk screw holes, flush with the back: two on the bottom edge, two on the top edge,
+# near the corners so cable glands and plugs never block the screwdriver. 4 mm wood screws (4 x 20 countersunk).
+EARS = True
+EAR_X = (12.0, INNER_W - 12.0)      # ear centers (inside X)
+EAR_W, EAR_L, EAR_T = 18.0, 15.0, 4.0
+EAR_HOLE_D, EAR_HEAD_D = 4.6, 8.6
+EAR_RIB = (2.0, 6.0)                # side ribs: thickness, height/length (45 degrees)
+
+# Wall-mount keyholes in the floor as an alternative (screw head up to 7.5 mm, shank up to 4 mm).
 KEYHOLE_X = (20.0, 100.0)
 KEYHOLE_Y = 47.0
 KEYHOLE_HEAD_D, KEYHOLE_SLOT_W, KEYHOLE_SLOT_L = 8.0, 4.2, 7.0
@@ -301,6 +309,39 @@ def usbc_cradle():
     return union(parts)
 
 
+def ear_holes():
+    """Screw hole centers of the mounting ears (base coordinates, X/Y)."""
+    holes = []
+    for x in EAR_X:
+        holes.append((x + OX, -EAR_L + EAR_W / 2))
+        holes.append((x + OX, OUT_D + EAR_L - EAR_W / 2))
+    return holes
+
+
+def make_ears():
+    """Mounting ears (solid) and their countersunk holes (to cut), base coordinates."""
+    solids, cuts = [], []
+    for hx, hy in ear_holes():
+        outward = -1 if hy < OUT_D / 2 else 1
+        wall_y = 0.0 if outward < 0 else OUT_D
+        tab = CrossSection.batch_hull([
+            CrossSection.square([EAR_W, 0.1]).translate([hx - EAR_W / 2, wall_y - outward * 2.0 - 0.05]),
+            CrossSection.circle(EAR_W / 2, SEGMENTS).translate([hx, hy])])
+        solids.append(tab.extrude(EAR_T))
+        # Ribs at both sides of the ear, 45-degree triangles against the wall.
+        t, h = EAR_RIB
+        tri = CrossSection.hull_points([(0, 0), (h, 0), (0, h)])          # (distance from wall, height)
+        rib = tri.extrude(t)                                               # u: away from wall, v: up, w: X
+        rib = rib.transform([[0, 0, 1, 0], [outward, 0, 0, 0], [0, 1, 0, 0]])
+        for sx in (-1, 1):
+            x0 = hx + sx * (EAR_W / 2 - t / 2) - t / 2
+            solids.append(rib.translate([x0, wall_y, EAR_T - 0.01]))
+        cuts.append(cyl_z(hx, hy, -1, EAR_T + 2, EAR_HOLE_D))
+        sink = (EAR_HEAD_D - EAR_HOLE_D) / 2
+        cuts.append(cyl_z(hx, hy, EAR_T - sink, sink + 0.01, EAR_HOLE_D, EAR_HEAD_D))
+    return union(solids), union(cuts)
+
+
 def make_base():
     shell = rounded_rect(OUT_W, OUT_D, CORNER_R).extrude(BASE_H)
     cavity = rounded_rect(INNER_W, INNER_D, max(CORNER_R - WALL, 0.5)).extrude(INNER_H + 1).translate([OX, OY, OZ])
@@ -316,6 +357,9 @@ def make_base():
     if USB_PORT == "panel":
         adds.append(usbc_cradle())
     body = union([body] + adds) ^ shell  # keep everything inside the outer shell
+    if EARS:
+        ears, ear_cuts = make_ears()
+        body = union([body, ears]) - ear_cuts
 
     cuts = []
     # Pilot holes.
@@ -524,6 +568,16 @@ def inner_parts(d: Display):
         # A cable plug pushed in all the way: overmold 12.4 x 6.6 stops at the pocket bottom, shell 8.3 x 2.5 x 6.6.
         stop = INNER_W + USBC_WALL_LEFT
         parts["usb plug"] = union([stadium_x(12.4, 6.6, stop, stop + 25), stadium_x(8.3, 2.5, stop - 6.6, stop)])
+    # Outside the box: gland bodies and cables, the DC plug, and a screwdriver over every ear hole.
+    for i, x in enumerate(CABLE_X):
+        for j, z in enumerate(CABLE_Z):
+            c = Manifold.cylinder(25, 9.5, 9.5, 24).rotate([90, 0, 0])
+            parts[f"gland F{i + 1}{'ab'[j]} outside"] = c.translate([x + OX, -0.05, z + OZ])
+    parts["DC plug"] = Manifold.cylinder(40, 5.5, 5.5, 32).rotate([0, 90, 0]).translate(
+        [OX + INNER_W + WALL + 0.05, DC_JACK_Y + OY, DC_JACK_Z + OZ])
+    if EARS:
+        for k, (hx, hy) in enumerate(ear_holes()):
+            parts[f"screwdriver {k + 1}"] = cyl_z(hx, hy, EAR_T + 0.05, BASE_H + LID_T + 40, 8.0)
     if d.pcb[0] > 0:
         cx, cy = display_center(d)
         top = INNER_H - d.glass_h - 0.3
@@ -600,7 +654,8 @@ def main():
     if base.status().name != "NoError" if hasattr(base.status(), "name") else False:
         print("base geometry error", base.status())
     write_stl(base, os.path.join(args.out, "base.stl"))
-    print(f"base.stl: {OUT_W:.1f} x {OUT_D:.1f} x {BASE_H:.1f} mm, {base.volume() / 1000:.1f} cm3")
+    bb = base.bounding_box()
+    print(f"base.stl: {bb[3] - bb[0]:.1f} x {bb[4] - bb[1]:.1f} x {bb[5] - bb[2]:.1f} mm with ears, {base.volume() / 1000:.1f} cm3")
 
     ok = True
     for name in args.display or DISPLAYS:
